@@ -1,11 +1,22 @@
 {
   "config": {
+    "flow_title": "Aprilaire 8870 Thermostat",
     "step": {
       "user": {
         "title": "Select Connection Type",
         "description": "Choose how to connect to your Aprilaire 8870 thermostats.",
         "data": {
           "connection_type": "Connection Type"
+        }
+      },
+      "connection_type": {
+        "title": "Connection Method",
+        "description": "Select how your RS-485 thermostat network is connected to Home Assistant",
+        "data": {
+          "connection_type": {
+            "serial_server": "Network Serial Server (IP address)",
+            "serial_port": "Direct Serial Connection (USB/COM port)"
+          }
         }
       },
       "serial_server": {
@@ -21,7 +32,10 @@
         "description": "Enter the details for your direct serial connection.",
         "data": {
           "port_name": "Serial Port Name",
-          "baud_rate": "Baud Rate"
+          "baud_rate": {
+            "9600": "9600 bps",
+            "19200": "19200 bps"
+          }
         }
       },
       "discovery": {
@@ -34,7 +48,8 @@
     },
     "abort": {
       "already_configured": "This connection is already configured",
-      "no_devices_found": "No thermostats found on the network"
+      "no_devices_found": "No thermostats found on the network",
+      "not_aprilaire_8870": "The device found is not an Aprilaire 8870 thermostat"
     },
     "error": {
       "cannot_connect": "Failed to connect, please verify your connection details",
@@ -47,34 +62,179 @@
       "default": "Successfully connected to {thermostats_count} Aprilaire thermostats"
     }
   },
-  "options": {
-    "step": {
-      "init": {
-        "title": "Configure Integration Options",
-        "description": "Adjust polling and update behavior for your thermostats.",
-        "data": {
-          "scan_interval": "Polling interval when Change of State (COS) is enabled (seconds)",
-          "fallback_scan_interval": "Polling interval when COS is not functioning (seconds)",
-          "enable_cos": "Enable Change of State (COS) functionality"
+  "entity": {
+    "climate": {
+      "aprilaire_climate": {
+        "state_attributes": {
+          "fan_mode": {
+            "auto": "Auto",
+            "on": "On",
+            "circ": "Circulate"
+          },
+          "hvac_mode": {
+            "off": "Off",
+            "heat": "Heat",
+            "cool": "Cool",
+            "auto": "Auto",
+            "heat_cool": "Heat/Cool",
+            "emht": "Emergency Heat"
+          },
+          "preset_mode": {
+            "none": "None",
+            "temp": "Temporary",
+            "perm": "Permanent",
+            "vac": "Vacation"
+          }
         }
+      }
+    },
+    "binary_sensor": {
+      "aprilaire_hvac_status": {
+        "name": "HVAC Status"
       },
-      "cos_config": {
-        "title": "Change of State Configuration",
-        "description": "Select which state changes should trigger immediate updates.",
-        "data": {
-          "cos_flags": "State change notifications to enable",
-          "cos_verification_interval": "COS verification interval (seconds)"
+      "aprilaire_fan_status": {
+        "name": "Fan Status"
+      },
+      "aprilaire_filter_status": {
+        "name": "Filter Status"
+      },
+      "aprilaire_error_status": {
+        "name": "Error Status"
+      },
+      "aprilaire_network_override": {
+        "name": "Network Override"
+      }
+    },
+    "sensor": {
+      "aprilaire_temperature": {
+        "name": "Temperature"
+      },
+      "aprilaire_humidity": {
+        "name": "Humidity"
+      },
+      "aprilaire_outdoor_temperature": {
+        "name": "Outdoor Temperature"
+      },
+      "aprilaire_outdoor_humidity": {
+        "name": "Outdoor Humidity"
+      }
+    },
+    "switch": {
+      "aprilaire_fan_override": {
+        "name": "Fan Override"
+      },
+      "aprilaire_network_override": {
+        "name": "Network Override"
+      },
+      "aprilaire_backlight": {
+        "name": "Backlight"
+      }
+    }
+  },
+  "services": {
+    "set_text_message": {
+      "name": "Set Text Message",
+      "description": "Display a message on the thermostat's screen.",
+      "fields": {
+        "message": {
+          "name": "Message",
+          "description": "Text message to display (max 31 characters)"
+        },
+        "message_type": {
+          "name": "Message Type",
+          "description": "Type of message to set (permanent or temporary)",
+          "selector": {
+            "select": {
+              "options": {
+                "pmes1": "Permanent Message 1",
+                "pmes2": "Permanent Message 2",
+                "pmes3": "Permanent Message 3",
+                "pmes4": "Permanent Message 4",
+                "tmpmes": "Temporary Message"
+              }
+            }
+          }
         }
-      },
-      "advanced": {
-        "title": "Advanced Settings",
-        "description": "These settings affect system performance and behavior.",
-        "data": {
-          "temperature_unit": "Temperature unit",
-          "command_retry_count": "Command retry attempts",
-          "enable_command_batching": "Enable command batching",
-          "debug_mode": "Enable debug logging",
-          "connection_backoff_max": "Maximum reconnection delay (seconds)"
+      }
+    },
+    "set_backlight": {
+      "name": "Set Backlight",
+      "description": "Control the thermostat's backlight.",
+      "fields": {
+        "level": {
+          "name": "Level",
+          "description": "Backlight brightness level (0-100)"
+        },
+        "constant": {
+          "name": "Constant On",
+          "description": "Keep backlight constantly on"
+        }
+      }
+    },
+    "reset_filter": {
+      "name": "Reset Filter",
+      "description": "Reset the filter alarm status.",
+      "fields": {
+        "filter_type": {
+          "name": "Filter Type",
+          "description": "Type of filter to reset",
+          "selector": {
+            "select": {
+              "options": {
+                "fltalm": "Air Filter",
+                "wpalm": "Water Panel",
+                "dehalm": "Dehumidifier",
+                "sysalm": "System"
+              }
+            }
+          }
+        }
+      }
+    },
+    "set_lockout": {
+      "name": "Set Lockout",
+      "description": "Configure thermostat lockout features.",
+      "fields": {
+        "lockout_type": {
+          "name": "Lockout Type",
+          "description": "Type of lockout to configure",
+          "selector": {
+            "select": {
+              "options": {
+                "fanlk": "Fan Lockout",
+                "modelk": "Mode Lockout",
+                "updnlk": "Setpoint Lockout"
+              }
+            }
+          }
+        },
+        "lockout_value": {
+          "name": "Lockout Value",
+          "description": "Lockout setting (0: disabled, 1: time-limited, 2: total lockout)"
+        }
+      }
+    },
+    "configure_cos": {
+      "name": "Configure COS",
+      "description": "Configure Change of State notifications.",
+      "fields": {
+        "cos_flags": {
+          "name": "COS Flags",
+          "description": "Change of State flags to enable",
+          "selector": {
+            "select": {
+              "multiple": true,
+              "options": {
+                "c1": "HVAC Relays",
+                "c2": "Temperature/Humidity",
+                "c5": "Setpoints",
+                "c7": "Mode",
+                "c8": "Fan",
+                "c14": "Alarms",
+                "c19": "Errors"
+              }
+            }
+          }
         }
       }
     }

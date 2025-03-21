@@ -50,24 +50,6 @@ from .connection import (
 
 _LOGGER = logging.getLogger(__name__)
 
-# Constants for the config flow
-# These can be moved to const.py if they're used elsewhere in the integration
-COS_FLAGS_OPTIONS = {
-    "c1": "HVAC relay status changes",
-    "c2": "Temperature/humidity changes",
-    "c5": "Setpoint changes",
-    "c7": "Mode changes",
-    "c8": "Fan state changes",
-    "c14": "Alarm status changes",
-    "c19": "Error status changes",
-}
-
-TEMPERATURE_UNIT_OPTIONS = [
-    "auto",
-    "C",
-    "F",
-]
-
 
 class ConnectionException(Exception):
     """Exception for connection issues."""
@@ -79,6 +61,7 @@ class AprilaireConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     VERSION = 1
     connection_type = None
     connection_config = None
+    connection = None  # Store the connection object between steps
 
     @staticmethod
     @callback
@@ -112,7 +95,10 @@ class AprilaireConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             data_schema=vol.Schema(
                 {
                     vol.Required(CONF_TYPE): vol.In(
-                        [CONNECTION_TYPE_SERIAL_SERVER, CONNECTION_TYPE_SERIAL_PORT]
+                        {
+                            CONNECTION_TYPE_SERIAL_SERVER: "Network Serial Server (IP address)",
+                            CONNECTION_TYPE_SERIAL_PORT: "Direct Serial Connection (USB/COM port)"
+                        }
                     ),
                 }
             ),
@@ -132,19 +118,27 @@ class AprilaireConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             await self.async_set_unique_id(f"{host}:{port}")
             self._abort_if_unique_id_configured()
             
-            # Test connection
+            # Create connection config
             connection_config = {
                 CONF_CONNECTION_TYPE: CONNECTION_TYPE_SERIAL_SERVER,
                 CONF_HOST: host,
                 CONF_PORT: port,
             }
             
-            connection_valid, connection_error = await self._async_test_connection(connection_config)
-            
-            if connection_valid:
-                return await self.async_step_discovery(connection_config)
-            else:
-                errors["base"] = connection_error
+            # Create and store connection for later use
+            try:
+                self.connection = self._create_connection(connection_config)
+                await self.connection.async_connect()
+                
+                # If connection successful, proceed to discovery
+                self.connection_config = connection_config
+                return await self.async_step_device_discovery()
+            except Exception as ex:
+                _LOGGER.exception("Error connecting to serial server: %s", ex)
+                if hasattr(self, "connection") and self.connection is not None:
+                    await self.connection.async_disconnect()
+                    self.connection = None
+                errors["base"] = "cannot_connect"
         
         return self.async_show_form(
             step_id="serial_server",
@@ -171,19 +165,27 @@ class AprilaireConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             await self.async_set_unique_id(device)
             self._abort_if_unique_id_configured()
             
-            # Test connection
+            # Create connection config
             connection_config = {
                 CONF_CONNECTION_TYPE: CONNECTION_TYPE_SERIAL_PORT,
                 CONF_SERIAL_PORT: device,
                 CONF_BAUDRATE: baud_rate,
             }
             
-            connection_valid, connection_error = await self._async_test_connection(connection_config)
-            
-            if connection_valid:
-                return await self.async_step_discovery(connection_config)
-            else:
-                errors["base"] = connection_error
+            # Create and store connection for later use
+            try:
+                self.connection = self._create_connection(connection_config)
+                await self.connection.async_connect()
+                
+                # If connection successful, proceed to discovery
+                self.connection_config = connection_config
+                return await self.async_step_device_discovery()
+            except Exception as ex:
+                _LOGGER.exception("Error connecting to serial port: %s", ex)
+                if hasattr(self, "connection") and self.connection is not None:
+                    await self.connection.async_disconnect()
+                    self.connection = None
+                errors["base"] = "cannot_connect"
         
         return self.async_show_form(
             step_id="serial_port",
@@ -198,38 +200,33 @@ class AprilaireConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             errors=errors,
         )
 
-    async def async_step_discovery(
-        self, connection_config: dict[str, Any]
+    async def async_step_device_discovery(
+        self, user_input: dict[str, Any] | None = None
     ) -> FlowResult:
-        """Discover thermostats on the network."""
-        # Create connection based on config
-        connection = self._create_connection(connection_config)
+        """Discover thermostats using the established connection."""
         discovered_thermostats = []
         error = None
         
         try:
-            # Connect to the device
-            await connection.async_connect()
-            
             # Start the read task to receive responses
-            await connection.async_start_reading()
+            await self.connection.async_start_reading()
             
             # Wait a moment for the read task to start
             await asyncio.sleep(0.5)
             
-            # Send SN? command to discover thermostats and wait for response
+            # Send SN? command to discover thermostats
             _LOGGER.debug("Sending discovery command SN?")
-            await connection.async_send_command("SN?")
+            await self.connection.async_send_command("SN?")
             
-            # Wait for responses to come in (thermostats respond in sequence)
+            # Wait for responses (thermostats respond in sequence)
             # This timeout should be sufficient for several thermostats to respond
             await asyncio.sleep(3)
             
-            # Get any responses that were received
-            responses = await self._get_responses_from_connection(connection)
+            # Get received messages
+            responses = self.connection.get_received_messages()
             _LOGGER.debug("Discovery responses received: %s", responses)
             
-            # Parse response to get thermostat addresses
+            # Parse responses to get thermostat addresses
             if responses:
                 for line in responses:
                     if line.startswith("SN"):
@@ -245,13 +242,13 @@ class AprilaireConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             if discovered_thermostats:
                 model_cmd = f"SN{discovered_thermostats[0]} ID?"
                 _LOGGER.debug("Sending model query: %s", model_cmd)
-                await connection.async_send_command(model_cmd)
+                await self.connection.async_send_command(model_cmd)
                 
                 # Wait for response
                 await asyncio.sleep(1)
                 
                 # Get response
-                model_responses = await self._get_responses_from_connection(connection)
+                model_responses = self.connection.get_received_messages()
                 _LOGGER.debug("Model responses received: %s", model_responses)
                 
                 model_response = model_responses[0] if model_responses else ""
@@ -261,87 +258,30 @@ class AprilaireConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     error = "not_aprilaire_8870"
         except Exception as ex:
             _LOGGER.exception("Error during discovery: %s", ex)
-            error = str(ex)
+            error = "discovery_error"
         finally:
             # Stop the read task
-            await connection.async_stop_reading()
-            
-            # Disconnect
-            await connection.async_disconnect()
+            if hasattr(self, "connection") and self.connection is not None:
+                await self.connection.async_stop_reading()
+                await self.connection.async_disconnect()
+                self.connection = None
         
         if error:
             return self.async_abort(reason=error)
         
         if not discovered_thermostats:
-            return self.async_abort(reason="no_thermostats_found")
+            return self.async_abort(reason="no_devices_found")
         
         # Add discovered thermostats to config
-        connection_config["discovered_thermostats"] = discovered_thermostats
+        self.connection_config["discovered_thermostats"] = discovered_thermostats
         
-        # Proceed to setting up basic config options
-        return await self.async_step_basic_config(connection_config)
-
-    async def _get_responses_from_connection(self, connection) -> list[str]:
-        """Get accumulated responses from the connection."""
-        # Access the buffer where responses are stored
-        # This will depend on how your connection class is implemented
-        if hasattr(connection, "_received_messages"):
-            # If the connection has a message collection attribute
-            messages = connection._received_messages.copy()
-            connection._received_messages.clear()
-            return messages
-        elif hasattr(connection, "_buffer"):
-            # If the connection stores responses in a buffer
-            buffer = connection._buffer
-            messages = buffer.split("\r")
-            connection._buffer = ""
-            return [msg for msg in messages if msg.strip()]
-        else:
-            # Fallback (implementation specific)
-            _LOGGER.warning("Could not retrieve messages from connection")
-            return []
-
-    async def async_step_basic_config(
-        self, connection_config: dict[str, Any] | None = None
-    ) -> FlowResult:
-        """Set up basic configuration options."""
-        if connection_config is None:
-            connection_config = self.connection_config
-        else:
-            self.connection_config = connection_config
+        # Set default values
+        self.connection_config[CONF_SCAN_INTERVAL] = DEFAULT_SCAN_INTERVAL
+        self.connection_config[CONF_ENABLE_COS] = True
         
-        thermostats = connection_config.get("discovered_thermostats", [])
-        _LOGGER.info("Setting up configuration for %d discovered thermostats", len(thermostats))
-        
-        return self.async_show_form(
-            step_id="basic_config",
-            data_schema=vol.Schema(
-                {
-                    vol.Required(
-                        CONF_SCAN_INTERVAL, 
-                        default=DEFAULT_SCAN_INTERVAL
-                    ): cv.positive_int,
-                    vol.Required(
-                        CONF_ENABLE_COS, 
-                        default=True
-                    ): cv.boolean,
-                }
-            ),
-        )
-
-    async def async_step_basic_config_2(
-        self, user_input: dict[str, Any] | None = None
-    ) -> FlowResult:
-        """Handle basic configuration input and setup."""
-        if user_input is not None:
-            # Merge user input with connection config
-            config = {**self.connection_config, **user_input}
-            
-            # Create entry
-            title = f"Aprilaire Thermostat ({len(config['discovered_thermostats'])} devices)"
-            return self.async_create_entry(title=title, data=config)
-        
-        return self.async_abort(reason="unknown_error")
+        # Create entry
+        title = f"Aprilaire Thermostat ({len(discovered_thermostats)} devices)"
+        return self.async_create_entry(title=title, data=self.connection_config)
 
     def _create_connection(self, config: dict[str, Any]) -> AprilaireConnectionBase:
         """Create appropriate connection instance based on config."""
@@ -360,45 +300,6 @@ class AprilaireConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         
         raise ValueError(f"Unsupported connection type: {connection_type}")
 
-    async def _async_test_connection(
-        self, connection_config: dict[str, Any]
-    ) -> tuple[bool, str]:
-        """Test connection to verify it works."""
-        connection = self._create_connection(connection_config)
-        try:
-            # Connect to the device
-            await connection.async_connect()
-            
-            # Start the read task to receive the response
-            await connection.async_start_reading()
-            
-            # Wait a moment for the read task to start
-            await asyncio.sleep(0.5)
-            
-            # Send a simple command to verify communication
-            await connection.async_send_command("\r")
-            
-            # Wait a moment for any response
-            await asyncio.sleep(1)
-            
-            # Stop the read task
-            await connection.async_stop_reading()
-            
-            # Success
-            return True, ""
-        except ConnectionException as ex:
-            _LOGGER.error("Connection test failed: %s", str(ex))
-            return False, "cannot_connect"
-        except asyncio.TimeoutError:
-            _LOGGER.error("Connection test timed out")
-            return False, "timeout"
-        except Exception as ex:
-            _LOGGER.exception("Unexpected error testing connection: %s", str(ex))
-            return False, "unknown"
-        finally:
-            # Always disconnect when done
-            await connection.async_disconnect()
-
 
 class AprilaireOptionsFlowHandler(config_entries.OptionsFlow):
     """Handle Aprilaire options."""
@@ -412,14 +313,10 @@ class AprilaireOptionsFlowHandler(config_entries.OptionsFlow):
     async def async_step_init(
         self, user_input: dict[str, Any] | None = None
     ) -> FlowResult:
-        """Manage basic options."""
+        """Manage options."""
         if user_input is not None:
             self.options.update(user_input)
-            
-            if user_input.get(CONF_ENABLE_COS, True):
-                return await self.async_step_cos_config()
-            else:
-                return await self.async_step_advanced()
+            return self.async_create_entry(title="", data=self.options)
         
         # Combine data and options for defaults
         combined = {**self.data, **self.options}
@@ -429,85 +326,21 @@ class AprilaireOptionsFlowHandler(config_entries.OptionsFlow):
             data_schema=vol.Schema(
                 {
                     vol.Required(
-                        CONF_SCAN_INTERVAL,
-                        default=combined.get(CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL),
-                    ): cv.positive_int,
-                    vol.Required(
-                        CONF_FALLBACK_SCAN_INTERVAL,
-                        default=combined.get(CONF_FALLBACK_SCAN_INTERVAL, DEFAULT_FALLBACK_SCAN_INTERVAL),
-                    ): cv.positive_int,
-                    vol.Required(
-                        CONF_ENABLE_COS,
-                        default=combined.get(CONF_ENABLE_COS, True),
-                    ): cv.boolean,
-                }
-            ),
-        )
-
-    async def async_step_cos_config(
-        self, user_input: dict[str, Any] | None = None
-    ) -> FlowResult:
-        """Configure COS settings."""
-        if user_input is not None:
-            self.options.update(user_input)
-            return await self.async_step_advanced()
-        
-        # Combine data and options for defaults
-        combined = {**self.data, **self.options}
-        
-        current_cos_flags = combined.get(CONF_COS_FLAGS, ["c1", "c2", "c5", "c7", "c8", "c19"])
-        
-        return self.async_show_form(
-            step_id="cos_config",
-            data_schema=vol.Schema(
-                {
-                    vol.Required(
-                        CONF_COS_FLAGS, 
-                        default=current_cos_flags,
-                    ): cv.multi_select(COS_FLAGS_OPTIONS),
-                    vol.Required(
-                        CONF_COS_VERIFICATION_INTERVAL,
-                        default=combined.get(CONF_COS_VERIFICATION_INTERVAL, DEFAULT_COS_VERIFICATION_INTERVAL),
-                    ): cv.positive_int,
-                }
-            ),
-        )
-
-    async def async_step_advanced(
-        self, user_input: dict[str, Any] | None = None
-    ) -> FlowResult:
-        """Configure advanced settings."""
-        if user_input is not None:
-            self.options.update(user_input)
-            return self.async_create_entry(title="", data=self.options)
-        
-        # Combine data and options for defaults
-        combined = {**self.data, **self.options}
-        
-        return self.async_show_form(
-            step_id="advanced",
-            data_schema=vol.Schema(
-                {
-                    vol.Required(
                         CONF_TEMPERATURE_UNIT,
                         default=combined.get(CONF_TEMPERATURE_UNIT, "auto"),
-                    ): vol.In(TEMPERATURE_UNIT_OPTIONS),
+                    ): vol.In(["auto", "C", "F"]),
                     vol.Required(
                         CONF_COMMAND_RETRY_COUNT,
                         default=combined.get(CONF_COMMAND_RETRY_COUNT, 3),
                     ): cv.positive_int,
                     vol.Required(
-                        CONF_ENABLE_COMMAND_BATCHING,
-                        default=combined.get(CONF_ENABLE_COMMAND_BATCHING, True),
-                    ): cv.boolean,
+                        CONF_CONNECTION_BACKOFF_MAX,
+                        default=combined.get(CONF_CONNECTION_BACKOFF_MAX, 300),
+                    ): cv.positive_int,
                     vol.Required(
                         CONF_DEBUG_MODE,
                         default=combined.get(CONF_DEBUG_MODE, False),
                     ): cv.boolean,
-                    vol.Required(
-                        CONF_CONNECTION_BACKOFF_MAX,
-                        default=combined.get(CONF_CONNECTION_BACKOFF_MAX, 300),
-                    ): cv.positive_int,
                 }
             ),
         )

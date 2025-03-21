@@ -5,8 +5,8 @@
       "user": {
         "data": {
           "connection_type": {
-            "serial_server": "Serial Server (Telnet)",
-            "serial_port": "Direct Serial Port (COM)"
+            "serial_server": "Network Serial Server (IP address)",
+            "serial_port": "Direct Serial Connection (USB/COM port)"
           }
         }
       },
@@ -218,18 +218,6 @@
         }
       }
     }
-  },
-  "options": {
-    "step": {
-      "init": {
-        "description": "Configure polling and update behavior."
-      },
-      "cos_config": {
-        "description": "Select which state changes should trigger immediate updates."
-      },
-      "advanced": {
-        "description": "Configure advanced system settings."
-      }
-    }
   }
 }
+
