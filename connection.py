@@ -7,6 +7,7 @@ from typing import Any, Callable, Dict, Optional
 import time
 import random
 
+import telnetlib3
 import serial_asyncio
 
 from homeassistant.core import HomeAssistant
@@ -230,8 +231,8 @@ class SerialServerConnection(AprilaireConnectionBase):
             )
             
             async with async_timeout.timeout(TIMEOUT):
-                # Create telnet connection
-                self._reader, self._writer = await asyncio.open_connection(
+                # Create telnet connection using telnetlib3
+                self._reader, self._writer = await telnetlib3.open_connection(
                     self._host, self._port
                 )
                 
@@ -269,7 +270,6 @@ class SerialServerConnection(AprilaireConnectionBase):
         if self._writer is not None:
             try:
                 self._writer.close()
-                await self._writer.wait_closed()
             except Exception as err:  # pylint: disable=broad-except
                 _LOGGER.error("Error closing telnet connection: %s", err)
                 
@@ -291,7 +291,7 @@ class SerialServerConnection(AprilaireConnectionBase):
                 command += "\r"
                 
             _LOGGER.debug("Sending command: %s", command.strip())
-            self._writer.write(command.encode("ascii"))
+            self._writer.write(command)
             await self._writer.drain()
             
         except Exception as err:  # pylint: disable=broad-except
@@ -313,7 +313,7 @@ class SerialServerConnection(AprilaireConnectionBase):
                 await self.async_reconnect()
                 return None
                 
-            return data.decode("ascii", errors="replace")
+            return data
             
         except Exception as err:  # pylint: disable=broad-except
             _LOGGER.error("Error reading data: %s", err)
