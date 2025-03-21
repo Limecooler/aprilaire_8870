@@ -40,6 +40,7 @@ from .const import (
     CONF_ENABLE_COMMAND_BATCHING,
     CONF_DEBUG_MODE,
     CONF_CONNECTION_BACKOFF_MAX,
+    COMMAND_TIMEOUT,
 )
 from .connection import (
     AprilaireConnectionBase,
@@ -133,7 +134,7 @@ class AprilaireConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             
             # Test connection
             connection_config = {
-                CONF_TYPE: CONNECTION_TYPE_SERIAL_SERVER,
+                CONF_CONNECTION_TYPE: CONNECTION_TYPE_SERIAL_SERVER,
                 CONF_HOST: host,
                 CONF_PORT: port,
             }
@@ -172,8 +173,8 @@ class AprilaireConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             
             # Test connection
             connection_config = {
-                CONF_TYPE: CONNECTION_TYPE_SERIAL_PORT,
-                CONF_DEVICE: device,
+                CONF_CONNECTION_TYPE: CONNECTION_TYPE_SERIAL_PORT,
+                CONF_SERIAL_PORT: device,
                 CONF_BAUDRATE: baud_rate,
             }
             
@@ -207,15 +208,30 @@ class AprilaireConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         error = None
         
         try:
+            # Connect to the device
             await connection.async_connect()
             
-            # Send SN? command to discover thermostats
-            response = await connection.async_send_command("SN?")
+            # Start the read task to receive responses
+            await connection.async_start_reading()
+            
+            # Wait a moment for the read task to start
+            await asyncio.sleep(0.5)
+            
+            # Send SN? command to discover thermostats and wait for response
+            _LOGGER.debug("Sending discovery command SN?")
+            await connection.async_send_command("SN?")
+            
+            # Wait for responses to come in (thermostats respond in sequence)
+            # This timeout should be sufficient for several thermostats to respond
+            await asyncio.sleep(3)
+            
+            # Get any responses that were received
+            responses = await self._get_responses_from_connection(connection)
+            _LOGGER.debug("Discovery responses received: %s", responses)
             
             # Parse response to get thermostat addresses
-            if response:
-                lines = response.strip().split("\r")
-                for line in lines:
+            if responses:
+                for line in responses:
                     if line.startswith("SN"):
                         address = line[2:].strip()
                         if address.isdigit():
@@ -223,16 +239,34 @@ class AprilaireConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             
             # Sort addresses
             discovered_thermostats.sort()
+            _LOGGER.debug("Discovered thermostats: %s", discovered_thermostats)
             
             # Get info about first thermostat to confirm it's an Aprilaire 8870
             if discovered_thermostats:
                 model_cmd = f"SN{discovered_thermostats[0]} ID?"
-                model_response = await connection.async_send_command(model_cmd)
+                _LOGGER.debug("Sending model query: %s", model_cmd)
+                await connection.async_send_command(model_cmd)
+                
+                # Wait for response
+                await asyncio.sleep(1)
+                
+                # Get response
+                model_responses = await self._get_responses_from_connection(connection)
+                _LOGGER.debug("Model responses received: %s", model_responses)
+                
+                model_response = model_responses[0] if model_responses else ""
+                
                 if not model_response or "8870" not in model_response:
+                    _LOGGER.warning("Not an Aprilaire 8870 model: %s", model_response)
                     error = "not_aprilaire_8870"
         except Exception as ex:
+            _LOGGER.exception("Error during discovery: %s", ex)
             error = str(ex)
         finally:
+            # Stop the read task
+            await connection.async_stop_reading()
+            
+            # Disconnect
             await connection.async_disconnect()
         
         if error:
@@ -247,6 +281,26 @@ class AprilaireConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         # Proceed to setting up basic config options
         return await self.async_step_basic_config(connection_config)
 
+    async def _get_responses_from_connection(self, connection) -> list[str]:
+        """Get accumulated responses from the connection."""
+        # Access the buffer where responses are stored
+        # This will depend on how your connection class is implemented
+        if hasattr(connection, "_received_messages"):
+            # If the connection has a message collection attribute
+            messages = connection._received_messages.copy()
+            connection._received_messages.clear()
+            return messages
+        elif hasattr(connection, "_buffer"):
+            # If the connection stores responses in a buffer
+            buffer = connection._buffer
+            messages = buffer.split("\r")
+            connection._buffer = ""
+            return [msg for msg in messages if msg.strip()]
+        else:
+            # Fallback (implementation specific)
+            _LOGGER.warning("Could not retrieve messages from connection")
+            return []
+
     async def async_step_basic_config(
         self, connection_config: dict[str, Any] | None = None
     ) -> FlowResult:
@@ -255,6 +309,9 @@ class AprilaireConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             connection_config = self.connection_config
         else:
             self.connection_config = connection_config
+        
+        thermostats = connection_config.get("discovered_thermostats", [])
+        _LOGGER.info("Setting up configuration for %d discovered thermostats", len(thermostats))
         
         return self.async_show_form(
             step_id="basic_config",
@@ -288,7 +345,7 @@ class AprilaireConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
     def _create_connection(self, config: dict[str, Any]) -> AprilaireConnectionBase:
         """Create appropriate connection instance based on config."""
-        connection_type = config[CONF_TYPE]
+        connection_type = config[CONF_CONNECTION_TYPE]
         
         if connection_type == CONNECTION_TYPE_SERIAL_SERVER:
             return SerialServerConnection(
@@ -309,10 +366,23 @@ class AprilaireConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         """Test connection to verify it works."""
         connection = self._create_connection(connection_config)
         try:
+            # Connect to the device
             await connection.async_connect()
             
-            # Try a simple command to verify communication
+            # Start the read task to receive the response
+            await connection.async_start_reading()
+            
+            # Wait a moment for the read task to start
+            await asyncio.sleep(0.5)
+            
+            # Send a simple command to verify communication
             await connection.async_send_command("\r")
+            
+            # Wait a moment for any response
+            await asyncio.sleep(1)
+            
+            # Stop the read task
+            await connection.async_stop_reading()
             
             # Success
             return True, ""
@@ -326,6 +396,7 @@ class AprilaireConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             _LOGGER.exception("Unexpected error testing connection: %s", str(ex))
             return False, "unknown"
         finally:
+            # Always disconnect when done
             await connection.async_disconnect()
 
 

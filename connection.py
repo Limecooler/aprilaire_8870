@@ -3,7 +3,7 @@ import asyncio
 import logging
 from abc import ABC, abstractmethod
 import async_timeout
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Callable, Dict, List, Optional
 import time
 import random
 
@@ -56,6 +56,7 @@ class AprilaireConnectionBase(ABC):
         self._message_callback = None
         self._connection_changed_callback = None
         self._buffer = ""
+        self._received_messages = []  # Store received messages
         self._connect_error_count = 0
         
     @property
@@ -103,7 +104,7 @@ class AprilaireConnectionBase(ABC):
         pass
         
     @abstractmethod
-    async def async_send_command(self, command: str) -> None:
+    async def async_send_command(self, command: str) -> Optional[str]:
         """Send a command to the thermostat."""
         pass
         
@@ -158,6 +159,9 @@ class AprilaireConnectionBase(ABC):
         for line in lines[:-1]:
             if line.strip():
                 _LOGGER.debug("Received message: %s", line)
+                # Store received message
+                self._received_messages.append(line)
+                
                 if self._message_callback is not None:
                     self._message_callback(line)
                     
@@ -201,6 +205,12 @@ class AprilaireConnectionBase(ABC):
         )
         return base_delay + jitter
 
+    def get_received_messages(self) -> List[str]:
+        """Get all received messages and clear the buffer."""
+        messages = self._received_messages.copy()
+        self._received_messages.clear()
+        return messages
+
 
 class SerialServerConnection(AprilaireConnectionBase):
     """Connection to Aprilaire thermostats through a serial server."""
@@ -240,8 +250,6 @@ class SerialServerConnection(AprilaireConnectionBase):
             self._connect_error_count = 0
             _LOGGER.info("Connected to serial server at %s:%s", self._host, self._port)
             
-            # Start the read loop
-            await self.async_start_reading()
             return True
             
         except asyncio.TimeoutError:
@@ -399,8 +407,6 @@ class ComPortConnection(AprilaireConnectionBase):
                 "Connected to COM port %s at %s baud", self._port_name, self._baud_rate
             )
             
-            # Start the read loop
-            await self.async_start_reading()
             return True
             
         except Exception as err:  # pylint: disable=broad-except
@@ -554,4 +560,8 @@ class ConnectionManager:
         for key, connection in list(self._connections.items()):
             await connection.async_disconnect()
             del self._connections[key]
+            
+    async def async_shutdown(self) -> None:
+        """Shutdown the connection manager."""
+        await self.async_close_all()
 
