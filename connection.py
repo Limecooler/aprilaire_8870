@@ -58,7 +58,7 @@ class AprilaireConnectionBase(ABC):
         self._buffer = ""
         self._received_messages = []  # Store received messages
         self._connect_error_count = 0
-        
+
     @property
     def state(self) -> str:
         """Return the current connection state."""
@@ -565,3 +565,8 @@ class ConnectionManager:
         """Shutdown the connection manager."""
         await self.async_close_all()
 
+    def get_received_messages(self) -> List[str]:
+        """Get all received messages and clear the buffer."""
+        messages = self._received_messages.copy()
+        self._received_messages.clear()
+        return messages

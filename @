@@ -253,25 +253,3 @@ COS_FAN: Final = COS_FLAG_FAN
 COS_ALARMS: Final = COS_FLAG_ALARMS
 COS_ERRORS: Final = COS_FLAG_ERRORS
 
-# HVAC Mode constants
-MODE_OFF: Final = "OFF"        # System off
-MODE_HEAT: Final = "HEAT"      # Heat mode
-MODE_COOL: Final = "COOL"      # Cool mode
-MODE_AUTO: Final = "AUTO"      # Auto mode
-MODE_EMHT: Final = "EMHT"      # Emergency heat mode
-
-# Fan Mode constants
-FAN_AUTO: Final = "AUTO"       # Fan auto mode
-FAN_ON: Final = "ON"           # Fan on mode
-FAN_CIRC: Final = "CIRC"       # Fan circulation mode
-
-# Controller Type constants
-CONTROLLER_TYPE_TEMP: Final = "0"    # Temperature controller
-CONTROLLER_TYPE_HUMID: Final = "1"   # Humidity controller
-
-# Equipment Type constants
-EQUIPMENT_TYPE_HEAT_COOL: Final = "heat_cool"
-EQUIPMENT_TYPE_HEAT_PUMP: Final = "heat_pump"
-
-# Logger name
-LOGGER_NAME: Final = f"{DOMAIN}"

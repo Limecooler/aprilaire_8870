@@ -761,9 +761,12 @@ class AprilaireDeviceManager:
         self.protocol = protocol
         self.devices = {}  # address -> AprilaireDevice
 
-    async def async_discover_devices(self) -> List[int]:
+    async def async_discover_devices(self, connection) -> List[int]:
         """Discover thermostats on the network.
         
+        Args:
+            connection: The connection to use for discovery
+            
         Returns:
             List of discovered thermostat addresses
         """
@@ -771,19 +774,24 @@ class AprilaireDeviceManager:
         
         try:
             # Send global discovery command (SN?)
-            response = await self.protocol.execute_global_command("?")
+            await connection.async_send_command("SN?")
             
-            if response:
-                # Parse addresses from responses
-                for line in response:
-                    if line.startswith("SN"):
-                        try:
-                            # Extract address from "SN1", "SN2", etc.
-                            address = int(line[2:])
-                            discovered_addresses.append(address)
-                        except ValueError:
-                            pass
-                            
+            # Wait for responses
+            await asyncio.sleep(3)
+            
+            # Get responses from the connection
+            messages = connection.get_received_messages()
+            
+            # Parse addresses from responses
+            for message in messages:
+                if message.startswith("SN"):
+                    try:
+                        # Extract address from "SN1", "SN2", etc.
+                        address = int(message[2:])
+                        discovered_addresses.append(address)
+                    except ValueError:
+                        pass
+                        
             _LOGGER.info("Discovered %d thermostats: %s", 
                         len(discovered_addresses), discovered_addresses)
                         
