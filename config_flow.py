@@ -3,15 +3,12 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Any, Dict, Optional
-
 import voluptuous as vol
 
 from homeassistant import config_entries
-from homeassistant.components import dhcp
+from homeassistant.config_entries import ConfigEntry, ConfigFlow, OptionsFlow
 from homeassistant.const import (
     CONF_HOST,
-    CONF_NAME,
     CONF_PORT,
     CONF_TYPE,
     CONF_DEVICE,
@@ -23,9 +20,17 @@ import homeassistant.helpers.config_validation as cv
 
 from .const import (
     DOMAIN,
-    CONF_BAUD_RATE,
-    CONF_CONNECTION_TIMEOUT,
-    CONF_COMMAND_TIMEOUT,
+    CONNECTION_TYPE_SERIAL_SERVER,
+    CONNECTION_TYPE_SERIAL_PORT,
+    CONF_CONNECTION_TYPE,
+    CONF_SERIAL_PORT,
+    CONF_BAUDRATE,
+    DEFAULT_PORT,
+    DEFAULT_BAUDRATE,
+    DEFAULT_UPDATE_INTERVAL,
+    DEFAULT_SCAN_INTERVAL,
+    DEFAULT_FALLBACK_SCAN_INTERVAL,
+    DEFAULT_COS_VERIFICATION_INTERVAL,
     CONF_FALLBACK_SCAN_INTERVAL,
     CONF_ENABLE_COS,
     CONF_COS_FLAGS,
@@ -35,40 +40,49 @@ from .const import (
     CONF_ENABLE_COMMAND_BATCHING,
     CONF_DEBUG_MODE,
     CONF_CONNECTION_BACKOFF_MAX,
-    CONN_TYPE_SERIAL_SERVER,
-    CONN_TYPE_SERIAL_PORT,
-    DEFAULT_PORT,
-    DEFAULT_BAUD_RATE,
-    DEFAULT_CONNECTION_TIMEOUT,
-    DEFAULT_COMMAND_TIMEOUT,
-    DEFAULT_SCAN_INTERVAL,
-    DEFAULT_FALLBACK_SCAN_INTERVAL,
-    DEFAULT_COS_VERIFICATION_INTERVAL,
-    DEFAULT_COMMAND_RETRY_COUNT,
-    DEFAULT_CONNECTION_BACKOFF_MAX,
-    DEFAULT_COS_FLAGS,
-    COS_FLAGS_OPTIONS,
-    TEMPERATURE_UNIT_OPTIONS,
 )
 from .connection import (
     AprilaireConnectionBase,
     SerialServerConnection,
-    ComPortConnection, 
-    ConnectionException,
+    ComPortConnection,
 )
 
 _LOGGER = logging.getLogger(__name__)
+
+# Constants for the config flow
+# These can be moved to const.py if they're used elsewhere in the integration
+COS_FLAGS_OPTIONS = {
+    "c1": "HVAC relay status changes",
+    "c2": "Temperature/humidity changes",
+    "c5": "Setpoint changes",
+    "c7": "Mode changes",
+    "c8": "Fan state changes",
+    "c14": "Alarm status changes",
+    "c19": "Error status changes",
+}
+
+TEMPERATURE_UNIT_OPTIONS = [
+    "auto",
+    "C",
+    "F",
+]
+
+
+class ConnectionException(Exception):
+    """Exception for connection issues."""
 
 
 class AprilaireConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     """Handle a config flow for Aprilaire 8870 Thermostat."""
 
     VERSION = 1
+    connection_type = None
+    connection_config = None
 
     @staticmethod
     @callback
     def async_get_options_flow(
-        config_entry: config_entries.ConfigEntry,
+        config_entry: ConfigEntry,
     ) -> AprilaireOptionsFlowHandler:
         """Get the options flow for this handler."""
         return AprilaireOptionsFlowHandler(config_entry)
@@ -87,9 +101,9 @@ class AprilaireConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             connection_type = user_input[CONF_TYPE]
             self.connection_type = connection_type
             
-            if connection_type == CONN_TYPE_SERIAL_SERVER:
+            if connection_type == CONNECTION_TYPE_SERIAL_SERVER:
                 return await self.async_step_serial_server()
-            elif connection_type == CONN_TYPE_SERIAL_PORT:
+            elif connection_type == CONNECTION_TYPE_SERIAL_PORT:
                 return await self.async_step_serial_port()
         
         return self.async_show_form(
@@ -97,7 +111,7 @@ class AprilaireConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             data_schema=vol.Schema(
                 {
                     vol.Required(CONF_TYPE): vol.In(
-                        [CONN_TYPE_SERIAL_SERVER, CONN_TYPE_SERIAL_PORT]
+                        [CONNECTION_TYPE_SERIAL_SERVER, CONNECTION_TYPE_SERIAL_PORT]
                     ),
                 }
             ),
@@ -119,10 +133,9 @@ class AprilaireConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             
             # Test connection
             connection_config = {
-                CONF_TYPE: CONN_TYPE_SERIAL_SERVER,
+                CONF_TYPE: CONNECTION_TYPE_SERIAL_SERVER,
                 CONF_HOST: host,
                 CONF_PORT: port,
-                CONF_CONNECTION_TIMEOUT: DEFAULT_CONNECTION_TIMEOUT,
             }
             
             connection_valid, connection_error = await self._async_test_connection(connection_config)
@@ -151,7 +164,7 @@ class AprilaireConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         
         if user_input is not None:
             device = user_input[CONF_DEVICE]
-            baud_rate = user_input[CONF_BAUD_RATE]
+            baud_rate = user_input[CONF_BAUDRATE]
             
             # Check if we already have this combination configured
             await self.async_set_unique_id(device)
@@ -159,10 +172,9 @@ class AprilaireConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             
             # Test connection
             connection_config = {
-                CONF_TYPE: CONN_TYPE_SERIAL_PORT,
+                CONF_TYPE: CONNECTION_TYPE_SERIAL_PORT,
                 CONF_DEVICE: device,
-                CONF_BAUD_RATE: baud_rate,
-                CONF_CONNECTION_TIMEOUT: DEFAULT_CONNECTION_TIMEOUT,
+                CONF_BAUDRATE: baud_rate,
             }
             
             connection_valid, connection_error = await self._async_test_connection(connection_config)
@@ -177,7 +189,7 @@ class AprilaireConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             data_schema=vol.Schema(
                 {
                     vol.Required(CONF_DEVICE): str,
-                    vol.Required(CONF_BAUD_RATE, default=DEFAULT_BAUD_RATE): vol.In(
+                    vol.Required(CONF_BAUDRATE, default=DEFAULT_BAUDRATE): vol.In(
                         [9600, 19200]
                     ),
                 }
@@ -218,7 +230,7 @@ class AprilaireConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 model_response = await connection.async_send_command(model_cmd)
                 if not model_response or "8870" not in model_response:
                     error = "not_aprilaire_8870"
-        except ConnectionException as ex:
+        except Exception as ex:
             error = str(ex)
         finally:
             await connection.async_disconnect()
@@ -278,17 +290,15 @@ class AprilaireConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         """Create appropriate connection instance based on config."""
         connection_type = config[CONF_TYPE]
         
-        if connection_type == CONN_TYPE_SERIAL_SERVER:
+        if connection_type == CONNECTION_TYPE_SERIAL_SERVER:
             return SerialServerConnection(
-                host=config[CONF_HOST],
-                port=config[CONF_PORT],
-                timeout=config.get(CONF_CONNECTION_TIMEOUT, DEFAULT_CONNECTION_TIMEOUT),
+                self.hass,
+                config,
             )
-        elif connection_type == CONN_TYPE_SERIAL_PORT:
+        elif connection_type == CONNECTION_TYPE_SERIAL_PORT:
             return ComPortConnection(
-                device=config[CONF_DEVICE],
-                baud_rate=config[CONF_BAUD_RATE],
-                timeout=config.get(CONF_CONNECTION_TIMEOUT, DEFAULT_CONNECTION_TIMEOUT),
+                self.hass,
+                config,
             )
         
         raise ValueError(f"Unsupported connection type: {connection_type}")
@@ -322,7 +332,7 @@ class AprilaireConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 class AprilaireOptionsFlowHandler(config_entries.OptionsFlow):
     """Handle Aprilaire options."""
 
-    def __init__(self, config_entry: config_entries.ConfigEntry) -> None:
+    def __init__(self, config_entry: ConfigEntry) -> None:
         """Initialize options flow."""
         self.config_entry = config_entry
         self.options = dict(config_entry.options)
@@ -374,7 +384,7 @@ class AprilaireOptionsFlowHandler(config_entries.OptionsFlow):
         # Combine data and options for defaults
         combined = {**self.data, **self.options}
         
-        current_cos_flags = combined.get(CONF_COS_FLAGS, DEFAULT_COS_FLAGS)
+        current_cos_flags = combined.get(CONF_COS_FLAGS, ["c1", "c2", "c5", "c7", "c8", "c19"])
         
         return self.async_show_form(
             step_id="cos_config",
@@ -413,7 +423,7 @@ class AprilaireOptionsFlowHandler(config_entries.OptionsFlow):
                     ): vol.In(TEMPERATURE_UNIT_OPTIONS),
                     vol.Required(
                         CONF_COMMAND_RETRY_COUNT,
-                        default=combined.get(CONF_COMMAND_RETRY_COUNT, DEFAULT_COMMAND_RETRY_COUNT),
+                        default=combined.get(CONF_COMMAND_RETRY_COUNT, 3),
                     ): cv.positive_int,
                     vol.Required(
                         CONF_ENABLE_COMMAND_BATCHING,
@@ -425,7 +435,7 @@ class AprilaireOptionsFlowHandler(config_entries.OptionsFlow):
                     ): cv.boolean,
                     vol.Required(
                         CONF_CONNECTION_BACKOFF_MAX,
-                        default=combined.get(CONF_CONNECTION_BACKOFF_MAX, DEFAULT_CONNECTION_BACKOFF_MAX),
+                        default=combined.get(CONF_CONNECTION_BACKOFF_MAX, 300),
                     ): cv.positive_int,
                 }
             ),

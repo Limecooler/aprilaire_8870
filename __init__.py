@@ -11,10 +11,6 @@ from homeassistant.helpers.typing import ConfigType
 from homeassistant.exceptions import ConfigEntryNotReady
 
 from .const import DOMAIN, PLATFORMS
-from .coordinator import AprilaireDataUpdateCoordinator
-from .device import AprilaireDeviceManager
-from .connection import ConnectionManager
-from .services import async_setup_services, async_unregister_services
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -31,6 +27,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     
     hass.data.setdefault(DOMAIN, {})
     
+    # Import modules here to avoid circular imports
+    from .coordinator import AprilaireDataUpdateCoordinator
+    from .connection import ConnectionManager
+    from .services import async_setup_services
+    
     # Initialize connection manager if not already initialized
     if "connection_manager" not in hass.data[DOMAIN]:
         hass.data[DOMAIN]["connection_manager"] = ConnectionManager(hass)
@@ -39,9 +40,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     
     # Create a connection from the config entry
     try:
-        connection = await connection_manager.get_connection(entry.data)
+        connection = await connection_manager.async_get_connection(entry.data)
         
-        # Initialize device manager if not already initialized
+        # Initialize device manager
+        from .device import AprilaireDeviceManager
+        
         if "device_manager" not in hass.data[DOMAIN]:
             hass.data[DOMAIN]["device_manager"] = AprilaireDeviceManager(hass, connection_manager)
         
@@ -52,13 +55,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         
         if not discovered_devices:
             _LOGGER.warning("No Aprilaire 8870 thermostats discovered on the network")
-            await connection_manager.close_connection(connection)
+            await connection_manager.async_close_connection(connection)
             raise ConfigEntryNotReady("No thermostats discovered")
         
         # Create update coordinator
         coordinator = AprilaireDataUpdateCoordinator(
             hass,
             _LOGGER,
+            connection=connection,
             device_manager=device_manager,
             entry=entry,
         )
@@ -88,7 +92,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         if "connection_manager" in hass.data[DOMAIN]:
             connection_manager = hass.data[DOMAIN]["connection_manager"]
             if connection and connection_manager:
-                await connection_manager.close_connection(connection)
+                await connection_manager.async_close_connection(connection)
         raise ConfigEntryNotReady(f"Error connecting to Aprilaire network: {ex}") from ex
 
 
@@ -100,6 +104,9 @@ async def async_update_options(hass: HomeAssistant, entry: ConfigEntry) -> None:
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Unload a config entry."""
     _LOGGER.debug("Unloading Aprilaire 8870 integration with entry: %s", entry.entry_id)
+    
+    # Import services here to avoid circular imports
+    from .services import async_unregister_services
     
     # Unload platforms
     unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)

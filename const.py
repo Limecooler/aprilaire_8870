@@ -17,21 +17,27 @@ CONF_CONNECTION_TYPE: Final = "connection_type"
 CONF_SERIAL_PORT: Final = "port_name"
 CONF_BAUDRATE: Final = "baud_rate"
 
-# Connection type values
+# Connection type values - include both naming conventions
 CONNECTION_TYPE_SERIAL_SERVER: Final = "serial_server"
 CONNECTION_TYPE_SERIAL_PORT: Final = "serial_port"
+CONN_TYPE_SERIAL_SERVER: Final = "serial_server"  # Alias for compatibility
+CONN_TYPE_SERIAL_PORT: Final = "serial_port"  # Alias for compatibility
 
 # Default configuration values
 DEFAULT_PORT: Final = 23
 DEFAULT_BAUDRATE: Final = 9600
 DEFAULT_SCAN_INTERVAL: Final = 300  # 5 minutes
+DEFAULT_UPDATE_INTERVAL: Final = 300  # 5 minutes
 DEFAULT_FALLBACK_SCAN_INTERVAL: Final = 60  # 1 minute
+DEFAULT_COS_VERIFICATION_INTERVAL: Final = 1800  # 30 minutes
 DEFAULT_NAME: Final = "Aprilaire 8870 Thermostat"
 
 # Timeout values
-TIMEOUT_CONNECTION: Final = 10
-TIMEOUT_COMMAND: Final = 3
+TIMEOUT: Final = 10
+COMMAND_TIMEOUT: Final = 3
 CONNECTION_BACKOFF_MAX: Final = 300  # 5 minutes
+CONNECTION_BACKOFF_FACTOR: Final = 2
+CONNECTION_BACKOFF_JITTER: Final = 0.1
 
 # Additional configuration keys
 CONF_FALLBACK_SCAN_INTERVAL: Final = "fallback_scan_interval"
@@ -45,18 +51,51 @@ CONF_DEBUG_MODE: Final = "debug_mode"
 CONF_CONNECTION_BACKOFF_MAX: Final = "connection_backoff_max"
 
 # Default options values
-DEFAULT_ENABLE_COS: Final = True
-DEFAULT_COS_VERIFICATION_INTERVAL: Final = 1800  # 30 minutes
 DEFAULT_COMMAND_RETRY_COUNT: Final = 3
-DEFAULT_ENABLE_COMMAND_BATCHING: Final = True
-DEFAULT_DEBUG_MODE: Final = False
 
-# Service constants
-SERVICE_SET_TEXT_MESSAGE: Final = "set_text_message"
-SERVICE_SET_BACKLIGHT: Final = "set_backlight"
-SERVICE_RESET_FILTER: Final = "reset_filter"
-SERVICE_SET_LOCKOUT: Final = "set_lockout"
-SERVICE_CONFIGURE_COS: Final = "configure_cos"
+# COS flag constants
+COS_FLAG_HVAC_RELAYS: Final = "c1"     # HVAC relay status changes
+COS_FLAG_TEMPERATURE: Final = "c2"     # Temperature/humidity changes 
+COS_FLAG_OUTDOOR_TEMP: Final = "c3"    # Remote temp/humidity changes
+COS_FLAG_CONTACT_CLOSURES: Final = "c4"  # Contact closures (N/A for 8870)
+COS_FLAG_SETPOINTS: Final = "c5"       # Setpoint changes
+COS_FLAG_NETWORK_OVERRIDE: Final = "c6"  # Network override changes
+COS_FLAG_MODE: Final = "c7"           # Mode changes
+COS_FLAG_FAN: Final = "c8"            # Fan state changes
+COS_FLAG_SCROLL_UP: Final = "c9"      # Scroll Up button status
+COS_FLAG_SCROLL_DOWN: Final = "c10"   # Scroll Down button status
+COS_FLAG_ENTER: Final = "c11"         # Enter button status
+COS_FLAG_BACKLIGHT: Final = "c12"     # Backlight ready status
+COS_FLAG_SETUP: Final = "c13"         # Configuration/Setup changes
+COS_FLAG_ALARMS: Final = "c14"        # Alarm status changes
+COS_FLAG_RECOVERY: Final = "c15"      # Progressive recovery status
+COS_FLAG_SCHEDULE: Final = "c16"      # Schedule changes
+COS_FLAG_HOLD_STATUS: Final = "c17"   # Hold status changes
+COS_FLAG_ERRORS: Final = "c19"        # Error status changes
+
+# Default COS flags to enable
+DEFAULT_COS_FLAGS: Final = [
+    COS_FLAG_HVAC_RELAYS,
+    COS_FLAG_TEMPERATURE,
+    COS_FLAG_SETPOINTS,
+    COS_FLAG_MODE,
+    COS_FLAG_FAN,
+    COS_FLAG_ALARMS,
+    COS_FLAG_ERRORS,
+]
+
+# Map COS flags to their corresponding message patterns
+COS_PREFIX_PATTERN: Final = {
+    COS_FLAG_HVAC_RELAYS: "HVAC",
+    COS_FLAG_TEMPERATURE: "T",
+    COS_FLAG_OUTDOOR_TEMP: "OT",
+    COS_FLAG_SETPOINTS: "S[HC]",  # Matches SH or SC
+    COS_FLAG_NETWORK_OVERRIDE: "HOLD",
+    COS_FLAG_MODE: "M",
+    COS_FLAG_FAN: "F",
+    COS_FLAG_ALARMS: ".*ALM",    # Matches any alarm pattern
+    COS_FLAG_ERRORS: "ERROR",
+}
 
 # Platforms used in the integration
 PLATFORMS: Final = [
@@ -67,114 +106,121 @@ PLATFORMS: Final = [
 ]
 
 # Protocol constants
-PROTOCOL_TERMINATOR: Final = "\r"
-PROTOCOL_COMMAND_PREFIX: Final = "SN"
+THERMOSTAT_PROCESSING_TIME_MS: Final = 265
+RESPONSE_DELAY_MS: Final = 20
+GLOBAL_COMMAND_PROCESSING_MULTIPLIER: Final = 64
 
-# Command types
-COMMAND_QUERY: Final = "?"
-COMMAND_ASSIGNMENT: Final = "="
+# HVAC relay indices for parsing status
+HVAC_RELAY_INDICES: Final = {
+    "G": 1,    # Fan
+    "Y1": 3,   # First stage compressor/cooling
+    "W1": 5,   # First stage heat
+    "Y2": 7,   # Second stage compressor/cooling
+    "W2": 9,   # Second stage heat
+    "B": 11,   # Reversing valve (heat mode)
+    "O": 13,   # Reversing valve (cool mode)
+}
 
-# COS flag constants
-COS_HVAC_RELAYS: Final = "c1"  # HVAC relay status changes
-COS_TEMPERATURE: Final = "c2"  # Temperature/humidity changes
-COS_OUTDOOR_TEMP: Final = "c3"  # Remote temp/humidity changes
-COS_CONTACT_CLOSURES: Final = "c4"  # Contact closures (not used in 8870)
-COS_SETPOINTS: Final = "c5"  # Setpoint changes
-COS_NETWORK_OVERRIDE: Final = "c6"  # Network override changes
-COS_MODE: Final = "c7"  # Mode changes
-COS_FAN: Final = "c8"  # Fan state changes
-COS_SCROLL_UP: Final = "c9"  # Scroll Up button status
-COS_SCROLL_DOWN: Final = "c10"  # Scroll Down button status
-COS_ENTER: Final = "c11"  # Enter button status
-COS_BACKLIGHT: Final = "c12"  # Backlight ready status
-COS_SETUP: Final = "c13"  # Configuration/Setup changes
-COS_ALARMS: Final = "c14"  # Alarm status changes
-COS_RECOVERY: Final = "c15"  # Progressive recovery status
-COS_SCHEDULE: Final = "c16"  # Schedule changes
-COS_HOLD_STATUS: Final = "c17"  # Hold status changes
-COS_ERROR: Final = "c19"  # Error status changes
+# Attribute constants for entities
+ATTR_HVAC_RELAY_STATUS: Final = "hvac_relay_status"
+ATTR_OUTDOOR_TEMPERATURE: Final = "outdoor_temperature"
+ATTR_INDOOR_HUMIDITY: Final = "indoor_humidity"
+ATTR_FILTER_STATUS: Final = "filter_status"
+ATTR_HOLD_STATUS: Final = "hold_status"
 
-# Default COS flags to enable
-DEFAULT_COS_FLAGS: Final = [
-    COS_HVAC_RELAYS,
-    COS_TEMPERATURE,
-    COS_SETPOINTS,
-    COS_MODE,
-    COS_FAN,
-    COS_ALARMS,
-    COS_ERROR,
-]
+# Sensor types
+SENSOR_TEMPERATURE: Final = "temperature"
+SENSOR_HUMIDITY: Final = "humidity"
+SENSOR_OUTDOOR_TEMPERATURE: Final = "outdoor_temperature"
+SENSOR_OUTDOOR_HUMIDITY: Final = "outdoor_humidity"
+SENSOR_REMOTE_TEMPERATURE: Final = "remote_temperature"
 
-# Command constants - frequently used commands
-CMD_SN: Final = "SN"  # Device discovery command
-CMD_ID: Final = "ID"  # Device ID query
-CMD_HVAC: Final = "HVAC"  # HVAC status 
-CMD_H: Final = "H"  # HVAC status (short form)
-CMD_TEMP: Final = "TEMP"  # Temperature query
-CMD_T: Final = "T"  # Temperature query (short form)
-CMD_HUM: Final = "HUM"  # Humidity query
-CMD_OT: Final = "OT"  # Outdoor temperature
-CMD_R: Final = "R"  # Outdoor temperature (alternate)
-CMD_OH: Final = "OH"  # Outdoor humidity
-CMD_MODE: Final = "MODE"  # System mode
-CMD_M: Final = "M"  # System mode (short form)
-CMD_FAN: Final = "FAN"  # Fan mode
-CMD_F: Final = "F"  # Fan mode (short form)
-CMD_SH: Final = "SH"  # Heat setpoint
-CMD_SC: Final = "SC"  # Cool setpoint
-CMD_SHUM: Final = "SHUM"  # Humidification setpoint
-CMD_SDEH: Final = "SDEH"  # Dehumidification setpoint
-CMD_EQUIPCONFIG: Final = "EQUIPCONFIG"  # Equipment configuration
-CMD_EQUIP: Final = "EQUIP"  # Equipment type
-CMD_CT: Final = "CT"  # Controller type
-CMD_CR: Final = "CR"  # Command response control
-CMD_CP: Final = "CP"  # Command configuration pattern
-CMD_HOLD: Final = "HOLD"  # Network override status
-CMD_NAME: Final = "NAME"  # Thermostat name
-CMD_FLTALM: Final = "FLTALM"  # Filter alarm status
-CMD_TMPMES: Final = "TMPMES"  # Temporary message
-CMD_BLTON: Final = "BLTON"  # Turn backlight on
+# Mode mapping between HA and Aprilaire
+APRILAIRE_TO_HA_HVAC_MODE: Final = {
+    "OFF": "off",
+    "HEAT": "heat",
+    "COOL": "cool",
+    "AUTO": "auto",
+    "EMHT": "heat_cool",  # Use heat_cool for Auto mode
+}
 
-# Response constants
-RESP_CR_NORMAL: Final = "NORMAL"
-RESP_CR_QUIET: Final = "QUIET"
-RESP_CR_SILENT: Final = "SILENT"
+HA_TO_APRILAIRE_HVAC_MODE: Final = {
+    "off": "OFF",
+    "heat": "HEAT",
+    "cool": "COOL",
+    "auto": "AUTO",
+    "heat_cool": "AUTO",  # Both map to AUTO
+    "emergency_heating": "EMHT",
+}
 
-# HVAC modes mapping
-HVAC_MODE_OFF: Final = "OFF"
-HVAC_MODE_HEAT: Final = "HEAT"
-HVAC_MODE_COOL: Final = "COOL"
-HVAC_MODE_AUTO: Final = "AUTO"
-HVAC_MODE_EMHT: Final = "EMHT"  # Emergency heat
+# Fan mode mapping between HA and Aprilaire
+APRILAIRE_TO_HA_FAN_MODE: Final = {
+    "AUTO": "auto",
+    "ON": "on",
+    "CIRC": "circulate",
+}
 
-# Fan modes mapping
-FAN_MODE_AUTO: Final = "AUTO"
-FAN_MODE_ON: Final = "ON"
-FAN_MODE_CIRC: Final = "CIRC"  # Circulation
+HA_TO_APRILAIRE_FAN_MODE: Final = {
+    "auto": "AUTO",
+    "on": "ON",
+    "circulate": "CIRC",
+}
 
-# Controller types
-CONTROLLER_TYPE_TEMPERATURE: Final = "0"
-CONTROLLER_TYPE_HUMIDITY: Final = "1"
+# HVAC action mapping
+APRILAIRE_TO_HA_HVAC_ACTION: Final = {
+    # Will be populated based on relay status interpretation
+    "heating": "heating",
+    "cooling": "cooling",
+    "idle": "idle",
+    "fan": "fan_only",
+}
 
-# Entity name suffixes
-ENTITY_SENSOR: Final = "Sensor"
-ENTITY_BINARY_SENSOR: Final = "Binary Sensor" 
-ENTITY_SWITCH: Final = "Switch"
-ENTITY_CLIMATE: Final = "Climate"
+# Valid modes and ranges
+VALID_HVAC_MODES: Final = ["OFF", "HEAT", "COOL", "AUTO", "EMHT"]
+VALID_FAN_MODES: Final = ["AUTO", "ON", "CIRC"]
 
-# Entity attribute keys
-ATTR_TEMPERATURE: Final = "temperature"
-ATTR_TARGET_TEMP: Final = "target_temperature"
-ATTR_HUMIDITY: Final = "humidity"
-ATTR_HVAC_MODE: Final = "hvac_mode"
-ATTR_FAN_MODE: Final = "fan_mode"
-ATTR_OUTDOOR_TEMP: Final = "outdoor_temperature"
-ATTR_OUTDOOR_HUMIDITY: Final = "outdoor_humidity"
+# Temperature ranges
+MIN_TEMP_F: Final = 40
+MAX_TEMP_F: Final = 90
+MIN_TEMP_C: Final = 4
+MAX_TEMP_C: Final = 32
 
-# Error and connection state constants
-STATE_DISCONNECTED: Final = "disconnected"
-STATE_CONNECTING: Final = "connecting"
-STATE_CONNECTED: Final = "connected"
-STATE_ERROR: Final = "error"
-STATE_RECOVERY: Final = "recovery"
+# Humidity ranges
+MIN_HUMIDITY: Final = 10
+MAX_HUMIDITY: Final = 90
+
+# Equipment types
+EQUIPMENT_TYPE_HEAT_COOL: Final = "heat_cool"
+EQUIPMENT_TYPE_HEAT_PUMP: Final = "heat_pump"
+
+# Service constants
+SERVICE_SET_TEXT_MESSAGE: Final = "set_text_message"
+SERVICE_SET_BACKLIGHT: Final = "set_backlight"
+SERVICE_RESET_FILTER: Final = "reset_filter"
+SERVICE_SET_LOCKOUT: Final = "set_lockout"
+SERVICE_CONFIGURE_COS: Final = "configure_cos"
+SERVICE_SIGNAL_SET_TEXT_MESSAGE: Final = f"{DOMAIN}_set_text_message"
+SERVICE_SIGNAL_SET_BACKLIGHT: Final = f"{DOMAIN}_set_backlight"
+SERVICE_SIGNAL_RESET_FILTER: Final = f"{DOMAIN}_reset_filter"
+SERVICE_SIGNAL_SET_LOCKOUT: Final = f"{DOMAIN}_set_lockout"
+SERVICE_SIGNAL_CONFIGURE_COS: Final = f"{DOMAIN}_configure_cos"
+
+# Message type constants
+MESSAGE_TYPE_TEMPORARY: Final = "tmpmes"
+MESSAGE_TYPE_PERMANENT_1: Final = "pmes1"
+MESSAGE_TYPE_PERMANENT_2: Final = "pmes2"
+MESSAGE_TYPE_PERMANENT_3: Final = "pmes3"
+MESSAGE_TYPE_PERMANENT_4: Final = "pmes4"
+
+# Service attribute constants
+ATTR_MESSAGE: Final = "message"
+ATTR_MESSAGE_TYPE: Final = "message_type"
+ATTR_STATE: Final = "state"
+ATTR_DURATION: Final = "duration"
+ATTR_FAN_LOCKOUT: Final = "fan_lockout"
+ATTR_MODE_LOCKOUT: Final = "mode_lockout"
+ATTR_SETPOINT_LOCKOUT: Final = "setpoint_lockout"
+ATTR_NETWORK_LOCKOUT: Final = "network_lockout"
+ATTR_LOCKOUT_TIME: Final = "lockout_time"
+ATTR_LOCKOUT_LIMIT: Final = "lockout_limit"
 
