@@ -1,0 +1,83 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Select Connection Type",
+        "description": "Choose how to connect to your Aprilaire 8870 thermostats.",
+        "data": {
+          "connection_type": "Connection Type"
+        }
+      },
+      "serial_server": {
+        "title": "Serial Server Configuration",
+        "description": "Enter the details for your network-connected serial server.",
+        "data": {
+          "host": "IP Address or Hostname",
+          "port": "Port"
+        }
+      },
+      "serial_port": {
+        "title": "Serial Port Configuration",
+        "description": "Enter the details for your direct serial connection.",
+        "data": {
+          "port_name": "Serial Port Name",
+          "baud_rate": "Baud Rate"
+        }
+      },
+      "discovery": {
+        "title": "Discovering Thermostats",
+        "description": "Searching for Aprilaire 8870 thermostats on the network...",
+        "progress": {
+          "discovering": "Searching for thermostats..."
+        }
+      }
+    },
+    "abort": {
+      "already_configured": "This connection is already configured",
+      "no_devices_found": "No thermostats found on the network"
+    },
+    "error": {
+      "cannot_connect": "Failed to connect, please verify your connection details",
+      "invalid_host": "Invalid IP address or hostname",
+      "invalid_port": "Port number must be between 1 and 65535",
+      "invalid_serial_port": "Serial port not found or inaccessible",
+      "unknown": "Unexpected error occurred"
+    },
+    "create_entry": {
+      "default": "Successfully connected to {thermostats_count} Aprilaire thermostats"
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Configure Integration Options",
+        "description": "Adjust polling and update behavior for your thermostats.",
+        "data": {
+          "scan_interval": "Polling interval when Change of State (COS) is enabled (seconds)",
+          "fallback_scan_interval": "Polling interval when COS is not functioning (seconds)",
+          "enable_cos": "Enable Change of State (COS) functionality"
+        }
+      },
+      "cos_config": {
+        "title": "Change of State Configuration",
+        "description": "Select which state changes should trigger immediate updates.",
+        "data": {
+          "cos_flags": "State change notifications to enable",
+          "cos_verification_interval": "COS verification interval (seconds)"
+        }
+      },
+      "advanced": {
+        "title": "Advanced Settings",
+        "description": "These settings affect system performance and behavior.",
+        "data": {
+          "temperature_unit": "Temperature unit",
+          "command_retry_count": "Command retry attempts",
+          "enable_command_batching": "Enable command batching",
+          "debug_mode": "Enable debug logging",
+          "connection_backoff_max": "Maximum reconnection delay (seconds)"
+        }
+      }
+    }
+  }
+}
+

@@ -1,0 +1,19 @@
+{
+  "domain": "aprilaire_8870",
+  "name": "Aprilaire 8870 Thermostat",
+  "documentation": "https://github.com/home-assistant/example-custom-config/tree/master/custom_components/aprilaire_8870",
+  "issue_tracker": "https://github.com/home-assistant/example-custom-config/issues",
+  "dependencies": [],
+  "codeowners": ["@example"],
+  "requirements": [
+    "pyserial-asyncio>=0.5",
+    "asynctelnet>=0.2.0"
+  ],
+  "zeroconf": [],
+  "ssdp": [],
+  "homekit": {},
+  "config_flow": true,
+  "version": "0.1.0",
+  "iot_class": "local_push"
+}
+
