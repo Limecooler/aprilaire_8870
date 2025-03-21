@@ -37,6 +37,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         hass.data[DOMAIN]["connection_manager"] = ConnectionManager(hass)
     
     connection_manager = hass.data[DOMAIN]["connection_manager"]
+    connection = None
     
     # Create a connection from the config entry
     try:
@@ -55,7 +56,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         
         if not discovered_devices:
             _LOGGER.warning("No Aprilaire 8870 thermostats discovered on the network")
-            await connection_manager.async_close_connection(connection)
+            # Properly close the connection
+            if connection:
+                await connection_manager.async_close_connection(connection)
             raise ConfigEntryNotReady("No thermostats discovered")
         
         # Create update coordinator
@@ -89,10 +92,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         
     except Exception as ex:
         _LOGGER.error("Error setting up Aprilaire 8870 integration: %s", ex)
-        if "connection_manager" in hass.data[DOMAIN]:
-            connection_manager = hass.data[DOMAIN]["connection_manager"]
-            if connection and connection_manager:
-                await connection_manager.async_close_connection(connection)
+        # Properly close the connection if it exists
+        if connection:
+            await connection_manager.async_close_connection(connection)
         raise ConfigEntryNotReady(f"Error connecting to Aprilaire network: {ex}") from ex
 
 

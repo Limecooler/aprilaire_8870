@@ -761,6 +761,7 @@ class AprilaireDeviceManager:
         self.protocol = protocol
         self.devices = {}  # address -> AprilaireDevice
 
+    # Fix in device.py for the async_discover_devices method
     async def async_discover_devices(self, connection) -> List[int]:
         """Discover thermostats on the network.
         
@@ -779,16 +780,23 @@ class AprilaireDeviceManager:
             # Wait for responses
             await asyncio.sleep(3)
             
-            # Get responses from the connection
-            messages = connection.get_received_messages()
-            
+            # Ensure the connection has a get_received_messages method
+            if hasattr(connection, 'get_received_messages'):
+                messages = connection.get_received_messages()
+            else:
+                # Fallback if the method doesn't exist on this connection object
+                _LOGGER.warning("Connection object does not support get_received_messages")
+                return []
+                
             # Parse addresses from responses
             for message in messages:
                 if message.startswith("SN"):
                     try:
                         # Extract address from "SN1", "SN2", etc.
-                        address = int(message[2:])
-                        discovered_addresses.append(address)
+                        address_str = message[2:].strip()
+                        if address_str and address_str.isdigit():
+                            address = int(address_str)
+                            discovered_addresses.append(address)
                     except ValueError:
                         pass
                         

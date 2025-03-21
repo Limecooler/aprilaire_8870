@@ -479,94 +479,73 @@ class ComPortConnection(AprilaireConnectionBase):
                 await self.async_reconnect()
             return None
 
-
-class ConnectionManager:
-    """Manage connections to Aprilaire thermostats."""
-    
-    def __init__(self, hass: HomeAssistant):
-        """Initialize the connection manager.
+    class ConnectionManager:
+        """Manage connections to Aprilaire thermostats."""
         
-        Args:
-            hass: HomeAssistant instance
-        """
-        self.hass = hass
-        self._connections = {}
-        
-    async def async_get_connection(self, config: Dict[str, Any]) -> AprilaireConnectionBase:
-        """Get or create a connection based on configuration.
-        
-        Args:
-            config: Connection configuration
+        def __init__(self, hass: HomeAssistant):
+            """Initialize the connection manager."""
+            self.hass = hass
+            self._connections = {}
             
-        Returns:
-            AprilaireConnectionBase: Connection instance
-        """
-        # Generate connection key
-        conn_type = config.get("connection_type")
-        
-        if conn_type == CONN_TYPE_SERIAL_SERVER:
-            key = f"serial_server_{config['host']}_{config.get('port', DEFAULT_PORT)}"
-        elif conn_type == CONN_TYPE_SERIAL_PORT:
-            key = f"serial_port_{config['port_name']}"
-        else:
-            raise ValueError(f"Unsupported connection type: {conn_type}")
+        async def async_get_connection(self, config: Dict[str, Any]) -> AprilaireConnectionBase:
+            """Get or create a connection based on configuration."""
+            # Generate connection key
+            conn_type = config.get("connection_type")
             
-        # Return existing connection if available
-        if key in self._connections:
-            connection = self._connections[key]
-            if not connection.is_connected():
-                await connection.async_connect()
+            if conn_type == CONN_TYPE_SERIAL_SERVER:
+                key = f"serial_server_{config['host']}_{config.get('port', DEFAULT_PORT)}"
+            elif conn_type == CONN_TYPE_SERIAL_PORT:
+                key = f"serial_port_{config['port_name']}"
+            else:
+                raise ValueError(f"Unsupported connection type: {conn_type}")
+                
+            # Return existing connection if available
+            if key in self._connections:
+                connection = self._connections[key]
+                if not connection.is_connected():
+                    await connection.async_connect()
+                return connection
+                
+            # Create new connection
+            if conn_type == CONN_TYPE_SERIAL_SERVER:
+                connection = SerialServerConnection(self.hass, config)
+            elif conn_type == CONN_TYPE_SERIAL_PORT:
+                connection = ComPortConnection(self.hass, config)
+            else:
+                raise ValueError(f"Unsupported connection type: {conn_type}")
+                
+            # Connect
+            await connection.async_connect()
+            
+            # Store connection
+            self._connections[key] = connection
             return connection
             
-        # Create new connection
-        if conn_type == CONN_TYPE_SERIAL_SERVER:
-            connection = SerialServerConnection(self.hass, config)
-        elif conn_type == CONN_TYPE_SERIAL_PORT:
-            connection = ComPortConnection(self.hass, config)
-        else:
-            raise ValueError(f"Unsupported connection type: {conn_type}")
+        async def async_close_connection(self, connection: AprilaireConnectionBase) -> None:
+            """Close a specific connection.
             
-        # Connect
-        await connection.async_connect()
-        
-        # Store connection
-        self._connections[key] = connection
-        return connection
-        
-    async def async_close_connection(self, config: Dict[str, Any]) -> None:
-        """Close a connection based on configuration.
-        
-        Args:
-            config: Connection configuration
-        """
-        # Generate connection key
-        conn_type = config.get("connection_type")
-        
-        if conn_type == CONN_TYPE_SERIAL_SERVER:
-            key = f"serial_server_{config['host']}_{config.get('port', DEFAULT_PORT)}"
-        elif conn_type == CONN_TYPE_SERIAL_PORT:
-            key = f"serial_port_{config['port_name']}"
-        else:
-            return
-            
-        # Close and remove the connection if it exists
-        if key in self._connections:
-            connection = self._connections[key]
-            await connection.async_disconnect()
-            del self._connections[key]
-            
-    async def async_close_all(self) -> None:
-        """Close all connections."""
-        for key, connection in list(self._connections.items()):
-            await connection.async_disconnect()
-            del self._connections[key]
-            
-    async def async_shutdown(self) -> None:
-        """Shutdown the connection manager."""
-        await self.async_close_all()
+            Args:
+                connection: The connection to close
+            """
+            # Find the connection in our dictionary
+            for key, stored_connection in list(self._connections.items()):
+                if stored_connection is connection:
+                    await connection.async_disconnect()
+                    del self._connections[key]
+                    return
+                    
+        async def async_close_all(self) -> None:
+            """Close all connections."""
+            for key, connection in list(self._connections.items()):
+                await connection.async_disconnect()
+                del self._connections[key]
+                
+        async def async_shutdown(self) -> None:
+            """Shutdown the connection manager."""
+            await self.async_close_all()
 
-    def get_received_messages(self) -> List[str]:
-        """Get all received messages and clear the buffer."""
-        messages = self._received_messages.copy()
-        self._received_messages.clear()
-        return messages
+        def get_received_messages(self) -> List[str]:
+            """Get all received messages and clear the buffer."""
+            messages = self._received_messages.copy()
+            self._received_messages.clear()
+            return messages
