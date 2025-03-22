@@ -99,8 +99,9 @@ class Command:
 class AprilaireProtocol:
     """Implementation of the Aprilaire thermostat protocol."""
 
-    def __init__(self, connect_callback=None, disconnect_callback=None):
+    def __init__(self, connection=None, connect_callback=None, disconnect_callback=None):
         """Initialize the protocol handler."""
+        self._connection = connection
         self._connect_callback = connect_callback
         self._disconnect_callback = disconnect_callback
         self._query_pattern = re.compile(r"^SN(\d+|) ([A-Z0-9+\-]+)\?$")
@@ -266,6 +267,141 @@ class AprilaireProtocol:
             return command.timeout * GLOBAL_COMMAND_PROCESSING_MULTIPLIER
         return command.timeout
 
+    async def execute_query_command(
+        self, device_id: int, command: str, timeout: Optional[float] = None
+    ) -> str:
+        """Execute a query command and return the response.
+        
+        Args:
+            device_id: The device to send the command to
+            command: The command to execute
+            timeout: Optional timeout override
+            
+        Returns:
+            The command response
+            
+        Raises:
+            CommandError: If the command fails
+        """
+        formatted_command = self.format_command(device_id, command)
+        
+        # This method should be implemented with actual command execution logic
+        # For now, we'll just return a placeholder
+        # This would typically call the connection's send_command method and wait for a response
+        return formatted_command
+        
+    async def execute_assignment_command(
+        self, device_id: int, command: str, value: str, timeout: Optional[float] = None
+    ) -> str:
+        """Execute an assignment command and return the response.
+        
+        Args:
+            device_id: The device to send the command to
+            command: The command to execute
+            value: The value to assign
+            timeout: Optional timeout override
+            
+        Returns:
+            The command response
+            
+        Raises:
+            CommandError: If the command fails
+        """
+        formatted_command = self.format_command(device_id, command, value)
+        
+        # This method should be implemented with actual command execution logic 
+        # For now, we'll just return a placeholder
+        # This would typically call the connection's send_command method and wait for a response
+        return formatted_command
+
+    async def execute_query_command(
+        self, device_id: int, command: str, timeout: Optional[float] = None
+    ) -> Optional[str]:
+        """Execute a query command and return the response.
+        
+        Args:
+            device_id: The device to send the command to
+            command: The command to execute
+            timeout: Optional timeout override
+            
+        Returns:
+            The command response value or None if failed
+            
+        Raises:
+            CommandError: If the command fails
+        """
+        if not hasattr(self, "_connection") or self._connection is None:
+            _LOGGER.error("No connection available for executing command")
+            return None
+            
+        try:
+            # Create formatted command
+            formatted_command = f"SN{device_id} {command}?"
+            
+            # Send the command and get the response
+            response = await self._connection.async_send_command(formatted_command)
+            
+            if not response:
+                return None
+                
+            # Parse the response to extract the value
+            # Expected format: "SN{device_id} {command}={value}"
+            if "=" in response:
+                parts = response.split("=", 1)
+                if len(parts) > 1:
+                    return parts[1].strip()
+                
+            return response.strip()
+            
+        except Exception as ex:
+            _LOGGER.error("Error executing query command %s for device %s: %s", 
+                         command, device_id, ex)
+            return None
+        
+    async def execute_assignment_command(
+        self, device_id: int, command: str, value: str, timeout: Optional[float] = None
+    ) -> Optional[str]:
+        """Execute an assignment command and return the response.
+        
+        Args:
+            device_id: The device to send the command to
+            command: The command to execute
+            value: The value to assign
+            timeout: Optional timeout override
+            
+        Returns:
+            The command response value or None if failed
+            
+        Raises:
+            CommandError: If the command fails
+        """
+        if not hasattr(self, "_connection") or self._connection is None:
+            _LOGGER.error("No connection available for executing command")
+            return None
+            
+        try:
+            # Create formatted command
+            formatted_command = f"SN{device_id} {command}={value}"
+            
+            # Send the command and get the response
+            response = await self._connection.async_send_command(formatted_command)
+            
+            if not response:
+                return None
+                
+            # Parse the response to extract the value
+            # Expected format: "SN{device_id} {command}={value}"
+            if "=" in response:
+                parts = response.split("=", 1)
+                if len(parts) > 1:
+                    return parts[1].strip()
+                
+            return response.strip()
+            
+        except Exception as ex:
+            _LOGGER.error("Error executing assignment command %s=%s for device %s: %s", 
+                         command, value, device_id, ex)
+            return None
 
 class CommandQueue:
     """Manages queuing and execution of commands."""

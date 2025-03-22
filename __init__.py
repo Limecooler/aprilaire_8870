@@ -49,9 +49,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         # Connect to the device
         await connection.async_connect()
         
-        # Create protocol instance
-        protocol = AprilaireProtocol()
-        
+        # Create protocol instance with connection
+        protocol = AprilaireProtocol(connection)    
+
         # Start reading from the connection
         await connection.async_start_reading()
         
