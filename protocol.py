@@ -269,7 +269,7 @@ class AprilaireProtocol:
 
     async def execute_query_command(
         self, device_id: int, command: str, timeout: Optional[float] = None
-    ) -> str:
+    ) -> Optional[str]:
         """Execute a query command and return the response.
         
         Args:
@@ -278,21 +278,58 @@ class AprilaireProtocol:
             timeout: Optional timeout override
             
         Returns:
-            The command response
-            
-        Raises:
-            CommandError: If the command fails
+            The command response value or None if failed
         """
-        formatted_command = self.format_command(device_id, command)
-        
-        # This method should be implemented with actual command execution logic
-        # For now, we'll just return a placeholder
-        # This would typically call the connection's send_command method and wait for a response
-        return formatted_command
-        
+        if not self._connection:
+            _LOGGER.error("No connection available for executing command")
+            return None
+            
+        try:
+            # Create formatted command
+            formatted_command = f"SN{device_id} {command}?"
+            
+            # Clear any previous received messages
+            if hasattr(self._connection, 'get_received_messages'):
+                self._connection.get_received_messages()
+            
+            # Send the command
+            await self._connection.async_send_command(formatted_command)
+            
+            # Wait for response
+            await asyncio.sleep(0.5)
+            
+            # Get received messages
+            if hasattr(self._connection, 'get_received_messages'):
+                responses = self._connection.get_received_messages()
+                _LOGGER.debug("Query responses received: %s", responses)
+                
+                # Look for a response that matches our command
+                for response in responses:
+                    if response.startswith(f"SN{device_id}") and command in response:
+                        # Parse the response to extract the value
+                        if "=" in response:
+                            parts = response.split("=", 1)
+                            if len(parts) > 1:
+                                return parts[1].strip()
+                        
+                        # If no specific format, return the whole response
+                        return response.strip()
+                
+                # No matching response found
+                _LOGGER.warning("No response received for command: %s", formatted_command)
+                return None
+            else:
+                _LOGGER.warning("Connection object does not support get_received_messages")
+                return None
+            
+        except Exception as ex:
+            _LOGGER.error("Error executing query command %s for device %s: %s", 
+                         command, device_id, ex)
+            return None   
+
     async def execute_assignment_command(
         self, device_id: int, command: str, value: str, timeout: Optional[float] = None
-    ) -> str:
+    ) -> Optional[str]:
         """Execute an assignment command and return the response.
         
         Args:
@@ -302,17 +339,54 @@ class AprilaireProtocol:
             timeout: Optional timeout override
             
         Returns:
-            The command response
-            
-        Raises:
-            CommandError: If the command fails
+            The command response value or None if failed
         """
-        formatted_command = self.format_command(device_id, command, value)
-        
-        # This method should be implemented with actual command execution logic 
-        # For now, we'll just return a placeholder
-        # This would typically call the connection's send_command method and wait for a response
-        return formatted_command
+        if not self._connection:
+            _LOGGER.error("No connection available for executing command")
+            return None
+            
+        try:
+            # Create formatted command
+            formatted_command = f"SN{device_id} {command}={value}"
+            
+            # Clear any previous received messages
+            if hasattr(self._connection, 'get_received_messages'):
+                self._connection.get_received_messages()
+            
+            # Send the command
+            await self._connection.async_send_command(formatted_command)
+            
+            # Wait for response
+            await asyncio.sleep(0.5)
+            
+            # Get received messages
+            if hasattr(self._connection, 'get_received_messages'):
+                responses = self._connection.get_received_messages()
+                _LOGGER.debug("Assignment responses received: %s", responses)
+                
+                # Look for a response that matches our command
+                for response in responses:
+                    if response.startswith(f"SN{device_id}") and command in response:
+                        # Parse the response to extract the value
+                        if "=" in response:
+                            parts = response.split("=", 1)
+                            if len(parts) > 1:
+                                return parts[1].strip()
+                        
+                        # If no specific format, return the whole response
+                        return response.strip()
+                
+                # No matching response found
+                _LOGGER.warning("No response received for command: %s", formatted_command)
+                return None
+            else:
+                _LOGGER.warning("Connection object does not support get_received_messages")
+                return None
+            
+        except Exception as ex:
+            _LOGGER.error("Error executing assignment command %s=%s for device %s: %s", 
+                         command, value, device_id, ex)
+            return None
 
     async def execute_query_command(
         self, device_id: int, command: str, timeout: Optional[float] = None

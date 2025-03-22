@@ -12,6 +12,9 @@ from homeassistant.exceptions import ConfigEntryNotReady
 
 from .const import DOMAIN, PLATFORMS
 from .connection import AprilaireConnectionBase, SerialServerConnection, ComPortConnection
+from .protocol import AprilaireProtocol
+from .coordinator import AprilaireDataUpdateCoordinator
+from .device import AprilaireDeviceManager
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -28,10 +31,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     
     hass.data.setdefault(DOMAIN, {})
     
-    # Import modules here to avoid circular imports
-    from .coordinator import AprilaireDataUpdateCoordinator
+    # Import services here to avoid circular imports
     from .services import async_setup_services
-    from .device import AprilaireDeviceManager, AprilaireProtocol
     
     # Create connection based on config entry
     connection = None
@@ -55,16 +56,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         # Start reading from the connection
         await connection.async_start_reading()
         
-        # Create update coordinator - only pass parameters that the constructor accepts
-        coordinator = AprilaireDataUpdateCoordinator(
-            hass,
-            _LOGGER,
-            connection
-            # Removed entry=entry parameter
-        )
-        
-        # Create device manager after coordinator is created
-        device_manager = AprilaireDeviceManager(coordinator, protocol)
+        # Create device manager with protocol
+        device_manager = AprilaireDeviceManager(protocol)
         
         # Discover devices on the network
         discovered_addresses = await device_manager.async_discover_devices(connection)
@@ -75,13 +68,28 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             if connection:
                 await connection.async_disconnect()
             raise ConfigEntryNotReady("No thermostats discovered")
-            
+        
         # Setup devices
         discovered_devices = {}
         for address in discovered_addresses:
             device = await device_manager.async_setup_device(address)
             if device:
                 discovered_devices[address] = device
+        
+        if not discovered_devices:
+            _LOGGER.warning("Failed to initialize any thermostats")
+            # Properly close the connection
+            if connection:
+                await connection.async_disconnect()
+            raise ConfigEntryNotReady("Failed to initialize thermostats")
+            
+        # Create update coordinator
+        coordinator = AprilaireDataUpdateCoordinator(
+            hass,
+            connection=connection,
+            devices=discovered_devices,
+            device_manager=device_manager
+        )
         
         # Perform initial data update
         await coordinator.async_refresh()

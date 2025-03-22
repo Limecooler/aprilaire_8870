@@ -794,7 +794,7 @@ class AprilaireDeviceManager:
                 
             # Parse addresses from responses
             for message in messages:
-                if isinstance(message, str) and message.startswith("SN"):
+                if message.startswith("SN"):
                     try:
                         # Extract address from "SN1", "SN2", etc.
                         address_str = message[2:].strip()

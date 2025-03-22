@@ -147,9 +147,25 @@ class AprilaireConnectionBase(ABC):
     async def _async_read_data(self) -> Optional[str]:
         """Read data from the connection."""
         pass
-        
-    async def _async_process_data(self, data: str) -> None:
+               
+    async def _async_process_data(self, data: Any) -> None:
         """Process incoming data."""
+        # Convert binary data to string if needed
+        if isinstance(data, bytes):
+            try:
+                data = data.decode('ascii', errors='replace')
+            except UnicodeDecodeError:
+                _LOGGER.warning("Unable to decode binary data to ASCII")
+                return
+        
+        # Ensure data is a string
+        if not isinstance(data, str):
+            try:
+                data = str(data)
+            except Exception:
+                _LOGGER.warning("Unable to convert data to string: %s", type(data))
+                return
+                
         self._buffer += data
         
         # Split by carriage return (message delimiter)
@@ -172,7 +188,7 @@ class AprilaireConnectionBase(ABC):
                 
         # Keep the last incomplete message (if any) in the buffer
         self._buffer = lines[-1]
-        
+
     async def async_reconnect(self) -> bool:
         """Attempt to reconnect with backoff."""
         await self.async_disconnect()
@@ -307,7 +323,7 @@ class SerialServerConnection(AprilaireConnectionBase):
             self.state = STATE_ERROR
             await self.async_reconnect()
             raise HomeAssistantError(f"Failed to send command: {err}")
-            
+                
     async def _async_read_data(self) -> Optional[str]:
         """Read data from the telnet connection."""
         if not self.is_connected() or self._reader is None:
@@ -320,7 +336,8 @@ class SerialServerConnection(AprilaireConnectionBase):
                 self.state = STATE_ERROR
                 await self.async_reconnect()
                 return None
-                
+            
+            # The data might be binary, but we'll handle it in _async_process_data
             return data
             
         except Exception as err:  # pylint: disable=broad-except
@@ -328,7 +345,6 @@ class SerialServerConnection(AprilaireConnectionBase):
             self.state = STATE_ERROR
             await self.async_reconnect()
             return None
-
 
 class SerialProtocol(asyncio.Protocol):
     """Serial protocol for reading and writing."""
@@ -469,7 +485,8 @@ class ComPortConnection(AprilaireConnectionBase):
             self._serial_protocol.data = b""
             
             if data:
-                return data.decode("ascii", errors="replace")
+                # We'll handle the binary-to-string conversion in _async_process_data
+                return data
             return None
             
         except Exception as err:  # pylint: disable=broad-except

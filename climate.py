@@ -29,10 +29,8 @@ from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import (
     CoordinatorEntity,
-    DataUpdateCoordinator,
 )
 
-from . import AprilaireDataUpdateCoordinator
 from .const import (
     DOMAIN,
     ATTR_HVAC_RELAY_STATUS,
@@ -58,10 +56,11 @@ async def async_setup_entry(
     async_add_entities: AddEntitiesCallback,
 ) -> None:
     """Set up Aprilaire climate based on config_entry."""
-    coordinator = hass.data[DOMAIN][entry.entry_id]
+    coordinator = hass.data[DOMAIN][entry.entry_id]["coordinator"]
+    devices = hass.data[DOMAIN][entry.entry_id]["devices"]
     
     entities = []
-    for device_id, device in coordinator.devices.items():
+    for device_id, device in devices.items():
         entities.append(AprilaireClimate(coordinator, device_id))
     
     async_add_entities(entities, True)
@@ -95,7 +94,7 @@ class AprilaireClimate(CoordinatorEntity, ClimateEntity):
 
     def __init__(
         self,
-        coordinator: AprilaireDataUpdateCoordinator,
+        coordinator,
         device_id: str,
     ) -> None:
         """Initialize the thermostat."""
@@ -107,79 +106,96 @@ class AprilaireClimate(CoordinatorEntity, ClimateEntity):
         self._attr_unique_id = f"{DOMAIN}_{device_id}_climate"
         
         # Set device info
-        self._attr_device_info = deviceinfo(
-            identifiers={(domain, device_id)},
-            name=self._device.get("name", f"aprilaire {device_id}"),
-            manufacturer="aprilaire",
-            model="8870",
-            sw_version=self._device.get("firmware_version", ""),
+        self._attr_device_info = DeviceInfo(
+            identifiers={(DOMAIN, device_id)},
+            name=self._device.name,
+            manufacturer="Aprilaire",
+            model=self._device.model,
+            sw_version=self._device.firmware_version,
         )
 
     @property
     def available(self) -> bool:
         """Return if entity is available."""
-        return self.coordinator.last_update_success and self._device.get("available", False)
+        return self.coordinator.last_update_success and self._device.available
 
     @property
     def current_temperature(self) -> Optional[float]:
         """Return the current temperature."""
-        return self._device.get("current_temperature")
+        state = self._device.get_state()
+        return state.get("temperature")
 
     @property
     def target_temperature(self) -> Optional[float]:
         """Return the temperature we try to reach."""
+        state = self._device.get_state()
         if self.hvac_mode == HVACMode.HEAT or self.hvac_mode == HVACMode.EMERGENCY_HEAT:
-            return self._device.get("heat_setpoint")
+            return state.get("heat_setpoint")
         if self.hvac_mode == HVACMode.COOL:
-            return self._device.get("cool_setpoint")
+            return state.get("cool_setpoint")
         return None
 
     @property
     def current_humidity(self) -> Optional[int]:
         """Return the current humidity."""
-        return self._device.get("current_humidity")
+        state = self._device.get_state()
+        return state.get("humidity")
 
     @property
     def hvac_mode(self) -> HVACMode:
         """Return hvac operation mode."""
-        mode = self._device.get("mode")
+        state = self._device.get_state()
+        mode = state.get("mode")
         return APRILAIRE_TO_HA_HVAC_MODE.get(mode, HVACMode.OFF)
 
     @property
     def hvac_action(self) -> Optional[HVACAction]:
         """Return the current HVAC action."""
-        relay_status = self._device.get("hvac_relay_status", "")
-        return APRILAIRE_TO_HA_HVAC_ACTION.get(relay_status, HVACAction.IDLE)
+        state = self._device.get_state()
+        relay_status = state.get("hvac_status", "")
+        
+        # Determine action based on relay status
+        if relay_status:
+            if "+W1" in relay_status or "+W2" in relay_status:
+                return HVACAction.HEATING
+            if "+Y1" in relay_status or "+Y2" in relay_status:
+                return HVACAction.COOLING
+            if "+G" in relay_status:
+                return HVACAction.FAN
+                
+        return HVACAction.IDLE
 
     @property
     def fan_mode(self) -> Optional[str]:
         """Return the fan setting."""
-        fan_mode = self._device.get("fan_mode")
+        state = self._device.get_state()
+        fan_mode = state.get("fan_mode")
         return APRILAIRE_TO_HA_FAN_MODE.get(fan_mode, FAN_AUTO)
 
     @property
     def extra_state_attributes(self) -> Dict[str, Any]:
         """Return the state attributes of the device."""
         attrs = {}
+        state = self._device.get_state()
         
         # Add outdoor temperature if available
-        if (outdoor_temp := self._device.get("outdoor_temperature")) is not None:
+        if (outdoor_temp := state.get("outdoor_temperature")) is not None:
             attrs[ATTR_OUTDOOR_TEMPERATURE] = outdoor_temp
             
         # Add indoor humidity if available
-        if (indoor_humidity := self._device.get("current_humidity")) is not None:
+        if (indoor_humidity := state.get("humidity")) is not None:
             attrs[ATTR_INDOOR_HUMIDITY] = indoor_humidity
             
         # Add HVAC relay status
-        if (relay_status := self._device.get("hvac_relay_status")) is not None:
+        if (relay_status := state.get("hvac_status")) is not None:
             attrs[ATTR_HVAC_RELAY_STATUS] = relay_status
             
         # Add filter status
-        if (filter_status := self._device.get("filter_status")) is not None:
+        if (filter_status := state.get("filter_alarm")) is not None:
             attrs[ATTR_FILTER_STATUS] = filter_status
             
         # Add hold status
-        if (hold_status := self._device.get("hold_status")) is not None:
+        if (hold_status := state.get("hold_status")) is not None:
             attrs[ATTR_HOLD_STATUS] = hold_status
             
         return attrs
