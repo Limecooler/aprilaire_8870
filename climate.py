@@ -13,6 +13,7 @@ from homeassistant.components.climate import (
     HVACAction,
     FanMode,
 )
+from homeassistant.components.climate.const import FAN_AUTO, FAN_ON  # Use constants instead of FanMode enum
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import (
     ATTR_TEMPERATURE,

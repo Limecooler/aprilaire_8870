@@ -11,6 +11,7 @@ from homeassistant.helpers.typing import ConfigType
 from homeassistant.exceptions import ConfigEntryNotReady
 
 from .const import DOMAIN, PLATFORMS
+from .connection import AprilaireConnectionBase, SerialServerConnection, ComPortConnection
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -29,53 +30,67 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     
     # Import modules here to avoid circular imports
     from .coordinator import AprilaireDataUpdateCoordinator
-    from .connection import ConnectionManager
     from .services import async_setup_services
+    from .device import AprilaireDeviceManager, AprilaireProtocol
     
-    # Initialize connection manager if not already initialized
-    if "connection_manager" not in hass.data[DOMAIN]:
-        hass.data[DOMAIN]["connection_manager"] = ConnectionManager(hass)
-    
-    connection_manager = hass.data[DOMAIN]["connection_manager"]
+    # Create connection based on config entry
     connection = None
-    
-    # Create a connection from the config entry
     try:
-        connection = await connection_manager.async_get_connection(entry.data)
+        connection_type = entry.data.get("connection_type")
         
-        # Initialize device manager
-        from .device import AprilaireDeviceManager
+        if connection_type == "serial_server":
+            connection = SerialServerConnection(hass, entry.data)
+        elif connection_type == "serial_port":
+            connection = ComPortConnection(hass, entry.data)
+        else:
+            _LOGGER.error("Unsupported connection type: %s", connection_type)
+            return False
+            
+        # Connect to the device
+        await connection.async_connect()
         
-        if "device_manager" not in hass.data[DOMAIN]:
-            hass.data[DOMAIN]["device_manager"] = AprilaireDeviceManager(hass, connection_manager)
+        # Create protocol instance
+        protocol = AprilaireProtocol()
         
-        device_manager = hass.data[DOMAIN]["device_manager"]
+        # Start reading from the connection
+        await connection.async_start_reading()
         
-        # Discover devices on the network
-        discovered_devices = await device_manager.async_discover_devices(connection)
-        
-        if not discovered_devices:
-            _LOGGER.warning("No Aprilaire 8870 thermostats discovered on the network")
-            # Properly close the connection
-            if connection:
-                await connection_manager.async_close_connection(connection)
-            raise ConfigEntryNotReady("No thermostats discovered")
-        
-        # Create update coordinator
+        # Create update coordinator - only pass parameters that the constructor accepts
         coordinator = AprilaireDataUpdateCoordinator(
             hass,
             _LOGGER,
-            connection=connection,
-            device_manager=device_manager,
-            entry=entry,
+            connection
+            # Removed entry=entry parameter
         )
         
-        # Perform initial data update
-        await coordinator.async_config_entry_first_refresh()
+        # Create device manager after coordinator is created
+        device_manager = AprilaireDeviceManager(coordinator, protocol)
         
-        # Store coordinator in hass data
+        # Discover devices on the network
+        discovered_addresses = await device_manager.async_discover_devices(connection)
+        
+        if not discovered_addresses:
+            _LOGGER.warning("No Aprilaire 8870 thermostats discovered on the network")
+            # Properly close the connection
+            if connection:
+                await connection.async_disconnect()
+            raise ConfigEntryNotReady("No thermostats discovered")
+            
+        # Setup devices
+        discovered_devices = {}
+        for address in discovered_addresses:
+            device = await device_manager.async_setup_device(address)
+            if device:
+                discovered_devices[address] = device
+        
+        # Perform initial data update
+        await coordinator.async_refresh()
+        
+        # Store everything in hass data
         hass.data[DOMAIN][entry.entry_id] = {
             "coordinator": coordinator,
+            "connection": connection,
+            "device_manager": device_manager,
             "devices": discovered_devices,
         }
         
@@ -94,7 +109,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         _LOGGER.error("Error setting up Aprilaire 8870 integration: %s", ex)
         # Properly close the connection if it exists
         if connection:
-            await connection_manager.async_close_connection(connection)
+            await connection.async_disconnect()
         raise ConfigEntryNotReady(f"Error connecting to Aprilaire network: {ex}") from ex
 
 
@@ -117,20 +132,18 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         # Get coordinator and connection data
         entry_data = hass.data[DOMAIN].pop(entry.entry_id)
         coordinator = entry_data["coordinator"]
+        connection = entry_data["connection"]
         
         # Stop coordinator
         await coordinator.async_shutdown()
+        
+        # Close connection
+        await connection.async_disconnect()
         
         # Check if this is the last entry for this domain
         if not hass.data[DOMAIN]:
             # Unregister services
             await async_unregister_services(hass)
-            
-            # Close all connections 
-            if "connection_manager" in hass.data[DOMAIN]:
-                connection_manager = hass.data[DOMAIN]["connection_manager"]
-                await connection_manager.async_shutdown()
-                del hass.data[DOMAIN]["connection_manager"]
             
             # Delete the domain data completely if empty
             del hass.data[DOMAIN]

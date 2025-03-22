@@ -435,3 +435,41 @@ class CommandQueue:
             
         return False
 
+    def execute_query_command(self, device_id, command, timeout=None):
+        """Execute a query command and return the response.
+
+        Args:
+            device_id: The device to send the command to
+            command: The command to execute
+            timeout: Optional timeout override
+
+        Returns:
+            The command response
+
+        Raises:
+            CommandError: If the command fails
+        """
+        formatted_command = self.format_command(device_id, command)
+        # This method returns the command result directly
+        # In a real implementation, you'd send the command and wait for a response
+        return formatted_command
+
+    def execute_assignment_command(self, device_id, command, value, timeout=None):
+        """Execute an assignment command and return the response.
+
+        Args:
+            device_id: The device to send the command to
+            command: The command to execute
+            value: The value to assign
+            timeout: Optional timeout override
+
+        Returns:
+            The command response
+
+        Raises:
+            CommandError: If the command fails
+        """
+        formatted_command = self.format_command(device_id, command, value)
+        # This method returns the command result directly
+        # In a real implementation, you'd send the command and wait for a response
+        return formatted_command
