@@ -116,8 +116,27 @@ class AprilaireDevice:
             True if initialization was successful, False otherwise
         """
         try:
-            # Query basic device information
-            model_info = await self.protocol.execute_query_command(self.address, CMD_ID)
+            # Query basic device information with increased wait time
+            # Create a manual command and wait for response instead of using the protocol method
+            formatted_command = f"SN{self.address} ID?"
+            await self.protocol._connection.async_send_command(formatted_command)
+            
+            # Wait longer for response - thermostats need time to respond
+            await asyncio.sleep(3)
+            
+            # Retrieve any responses received
+            responses = []
+            if hasattr(self.protocol._connection, 'get_received_messages'):
+                responses = self.protocol._connection.get_received_messages()
+                _LOGGER.debug("ID responses for device %s: %s", self.address, responses)
+            
+            # Process responses to find ID information
+            model_info = None
+            for response in responses:
+                if response.startswith(f"SN{self.address}") and ("MODEL#" in response or "ID" in response):
+                    model_info = response
+                    break
+            
             if not model_info:
                 _LOGGER.error("Failed to query device information for thermostat %s", self.address)
                 return False
@@ -125,21 +144,51 @@ class AprilaireDevice:
             # Parse model info
             self._parse_model_info(model_info)
             
-            # Query equipment configuration
-            equip_config = await self.protocol.execute_query_command(self.address, CMD_EQUIPCONFIG)
-            if equip_config:
-                self._parse_equipment_config(equip_config)
+            # Query equipment configuration - also with manual wait
+            formatted_command = f"SN{self.address} EQUIPCONFIG?"
+            await self.protocol._connection.async_send_command(formatted_command)
+            await asyncio.sleep(3)
+            
+            if hasattr(self.protocol._connection, 'get_received_messages'):
+                responses = self.protocol._connection.get_received_messages()
+                _LOGGER.debug("EQUIPCONFIG responses for device %s: %s", self.address, responses)
                 
-            # Query controller type
-            controller_type = await self.protocol.execute_query_command(self.address, CMD_CT)
-            if controller_type:
-                self._parse_controller_type(controller_type)
+                equip_config = None
+                for response in responses:
+                    if response.startswith(f"SN{self.address}") and "EQUIPCONFIG" in response:
+                        if "=" in response:
+                            parts = response.split("=", 1)
+                            if len(parts) > 1:
+                                equip_config = parts[1].strip()
+                        else:
+                            equip_config = response
+                        break
                 
-            # Query support modules if available
-            support_modules = await self.protocol.execute_query_command(self.address, CMD_RSM)
-            if support_modules:
-                self._parse_support_modules(support_modules)
+                if equip_config:
+                    self._parse_equipment_config(equip_config)
+            
+            # Query controller type - also with manual wait
+            formatted_command = f"SN{self.address} CT?"
+            await self.protocol._connection.async_send_command(formatted_command)
+            await asyncio.sleep(3)
+            
+            if hasattr(self.protocol._connection, 'get_received_messages'):
+                responses = self.protocol._connection.get_received_messages()
+                _LOGGER.debug("CT responses for device %s: %s", self.address, responses)
                 
+                controller_type = None
+                for response in responses:
+                    if response.startswith(f"SN{self.address}") and "CT" in response:
+                        if "=" in response:
+                            parts = response.split("=", 1)
+                            if len(parts) > 1:
+                                controller_type = parts[1].strip()
+                        break
+                
+                if controller_type:
+                    self._parse_controller_type(controller_type)
+            
+            # Continue with initialization...
             # Get initial state values
             await self.async_update()
             
@@ -780,7 +829,7 @@ class AprilaireDeviceManager:
             # Send global discovery command (SN?)
             await connection.async_send_command("SN?")
             
-            # Wait for responses
+            # Wait longer for responses
             await asyncio.sleep(3)
             
             # Get all received messages

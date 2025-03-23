@@ -24,7 +24,6 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     hass.data.setdefault(DOMAIN, {})
     return True
 
-
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up Aprilaire 8870 Thermostat from a config entry."""
     _LOGGER.debug("Setting up Aprilaire 8870 integration with entry: %s", entry.entry_id)
@@ -56,8 +55,19 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         # Start reading from the connection
         await connection.async_start_reading()
         
-        # Create device manager with protocol
-        device_manager = AprilaireDeviceManager(protocol)
+        # Create update coordinator first
+        coordinator = AprilaireDataUpdateCoordinator(
+            hass,
+            connection=connection,
+            devices={},  # Will be populated later
+            device_manager=None  # Will be set after device_manager is created
+        )
+        
+        # Create device manager with protocol and coordinator
+        device_manager = AprilaireDeviceManager(coordinator, protocol)
+        
+        # Set the device_manager in the coordinator
+        coordinator.device_manager = device_manager
         
         # Discover devices on the network
         discovered_addresses = await device_manager.async_discover_devices(connection)
@@ -83,13 +93,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 await connection.async_disconnect()
             raise ConfigEntryNotReady("Failed to initialize thermostats")
             
-        # Create update coordinator
-        coordinator = AprilaireDataUpdateCoordinator(
-            hass,
-            connection=connection,
-            devices=discovered_devices,
-            device_manager=device_manager
-        )
+        # Update the coordinator with the discovered devices
+        coordinator.devices = discovered_devices
         
         # Perform initial data update
         await coordinator.async_refresh()
@@ -119,7 +124,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         if connection:
             await connection.async_disconnect()
         raise ConfigEntryNotReady(f"Error connecting to Aprilaire network: {ex}") from ex
-
 
 async def async_update_options(hass: HomeAssistant, entry: ConfigEntry) -> None:
     """Handle options update."""

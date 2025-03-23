@@ -293,30 +293,46 @@ class AprilaireProtocol:
                 self._connection.get_received_messages()
             
             # Send the command
+            _LOGGER.debug("Sending command: %s", formatted_command)
             await self._connection.async_send_command(formatted_command)
             
-            # Wait for response
-            await asyncio.sleep(0.5)
+            # Wait longer for response - increased from 0.5s to 2s for better reliability
+            # This is critical for slower networks or busy devices
+            await asyncio.sleep(2.0)
             
             # Get received messages
             if hasattr(self._connection, 'get_received_messages'):
                 responses = self._connection.get_received_messages()
-                _LOGGER.debug("Query responses received: %s", responses)
+                _LOGGER.debug("Query responses received for %s %s: %s", device_id, command, responses)
                 
                 # Look for a response that matches our command
-                for response in responses:
-                    if response.startswith(f"SN{device_id}") and command in response:
-                        # Parse the response to extract the value
-                        if "=" in response:
-                            parts = response.split("=", 1)
-                            if len(parts) > 1:
-                                return parts[1].strip()
-                        
-                        # If no specific format, return the whole response
-                        return response.strip()
+                if responses:
+                    # First, try to find an exact command match
+                    for response in responses:
+                        if response.startswith(f"SN{device_id}") and command in response:
+                            # Parse the response to extract the value
+                            if "=" in response:
+                                parts = response.split("=", 1)
+                                if len(parts) > 1:
+                                    return parts[1].strip()
+                            
+                            # If no specific format, return the whole response
+                            return response.strip()
+                    
+                    # If no exact match found, try a more lenient approach for ID command
+                    # which might have special formatting
+                    if command == "ID":
+                        for response in responses:
+                            if response.startswith(f"SN{device_id}") and "MODEL#" in response:
+                                return response.strip()
+                    
+                    # Log all responses for debugging
+                    _LOGGER.debug("No matching response found. All responses: %s", responses)
+                else:
+                    _LOGGER.warning("No responses received for command: %s", formatted_command)
                 
                 # No matching response found
-                _LOGGER.warning("No response received for command: %s", formatted_command)
+                _LOGGER.warning("No matching response for command: %s", formatted_command)
                 return None
             else:
                 _LOGGER.warning("Connection object does not support get_received_messages")
@@ -324,8 +340,8 @@ class AprilaireProtocol:
             
         except Exception as ex:
             _LOGGER.error("Error executing query command %s for device %s: %s", 
-                         command, device_id, ex)
-            return None   
+                        command, device_id, ex)
+            return None
 
     async def execute_assignment_command(
         self, device_id: int, command: str, value: str, timeout: Optional[float] = None
@@ -354,30 +370,38 @@ class AprilaireProtocol:
                 self._connection.get_received_messages()
             
             # Send the command
+            _LOGGER.debug("Sending command: %s", formatted_command)
             await self._connection.async_send_command(formatted_command)
             
-            # Wait for response
-            await asyncio.sleep(0.5)
+            # Wait longer for response - increased from 0.5s to 2s
+            await asyncio.sleep(2.0)
             
             # Get received messages
             if hasattr(self._connection, 'get_received_messages'):
                 responses = self._connection.get_received_messages()
-                _LOGGER.debug("Assignment responses received: %s", responses)
+                _LOGGER.debug("Assignment responses received for %s %s=%s: %s", 
+                             device_id, command, value, responses)
                 
                 # Look for a response that matches our command
-                for response in responses:
-                    if response.startswith(f"SN{device_id}") and command in response:
-                        # Parse the response to extract the value
-                        if "=" in response:
-                            parts = response.split("=", 1)
-                            if len(parts) > 1:
-                                return parts[1].strip()
-                        
-                        # If no specific format, return the whole response
-                        return response.strip()
+                if responses:
+                    for response in responses:
+                        if response.startswith(f"SN{device_id}") and command in response:
+                            # Parse the response to extract the value
+                            if "=" in response:
+                                parts = response.split("=", 1)
+                                if len(parts) > 1:
+                                    return parts[1].strip()
+                            
+                            # If no specific format, return the whole response
+                            return response.strip()
+                    
+                    # Log all responses for debugging
+                    _LOGGER.debug("No matching response found. All responses: %s", responses)
+                else:
+                    _LOGGER.warning("No responses received for command: %s", formatted_command)
                 
                 # No matching response found
-                _LOGGER.warning("No response received for command: %s", formatted_command)
+                _LOGGER.warning("No matching response for command: %s", formatted_command)
                 return None
             else:
                 _LOGGER.warning("Connection object does not support get_received_messages")
@@ -385,7 +409,7 @@ class AprilaireProtocol:
             
         except Exception as ex:
             _LOGGER.error("Error executing assignment command %s=%s for device %s: %s", 
-                         command, value, device_id, ex)
+                        command, value, device_id, ex)
             return None
 
     async def execute_query_command(

@@ -153,7 +153,14 @@ class AprilaireConnectionBase(ABC):
         # Convert binary data to string if needed
         if isinstance(data, bytes):
             try:
-                data = data.decode('ascii', errors='replace')
+                # Use a more robust decoding approach
+                data_str = ""
+                for byte in data:
+                    if 32 <= byte <= 126:  # Printable ASCII range
+                        data_str += chr(byte)
+                    elif byte in (10, 13):  # Line feed or carriage return
+                        data_str += '\r'
+                data = data_str
             except UnicodeDecodeError:
                 _LOGGER.warning("Unable to decode binary data to ASCII")
                 return
@@ -173,19 +180,23 @@ class AprilaireConnectionBase(ABC):
         
         # Process complete messages (all but the last one)
         for line in lines[:-1]:
-            if line.strip():
-                _LOGGER.debug("Received message: %s", line)
-                # Store received message
-                self._received_messages.append(line)
-                
-                if self._message_callback is not None:
-                    self._message_callback(line)
+            line = line.strip()
+            if line:
+                # Additional filtering for thermostat responses
+                # Look for SN followed by numbers, which is the expected format
+                if line.startswith("SN") and any(c.isdigit() for c in line):
+                    _LOGGER.debug("Received message: %s", line)
+                    # Store received message
+                    self._received_messages.append(line)
                     
-                # Notify using Home Assistant dispatcher
-                async_dispatcher_send(
-                    self.hass, SIGNAL_MESSAGE_RECEIVED, self.config, line
-                )
-                
+                    if self._message_callback is not None:
+                        self._message_callback(line)
+                        
+                    # Notify using Home Assistant dispatcher
+                    async_dispatcher_send(
+                        self.hass, SIGNAL_MESSAGE_RECEIVED, self.config, line
+                    )
+        
         # Keep the last incomplete message (if any) in the buffer
         self._buffer = lines[-1]
 
@@ -323,7 +334,7 @@ class SerialServerConnection(AprilaireConnectionBase):
             self.state = STATE_ERROR
             await self.async_reconnect()
             raise HomeAssistantError(f"Failed to send command: {err}")
-                
+                    
     async def _async_read_data(self) -> Optional[str]:
         """Read data from the telnet connection."""
         if not self.is_connected() or self._reader is None:
@@ -337,7 +348,8 @@ class SerialServerConnection(AprilaireConnectionBase):
                 await self.async_reconnect()
                 return None
             
-            # The data might be binary, but we'll handle it in _async_process_data
+            # Handle binary data properly
+            _LOGGER.debug("Raw data received: %r", data)
             return data
             
         except Exception as err:  # pylint: disable=broad-except
