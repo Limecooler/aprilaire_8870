@@ -2,9 +2,7 @@
 from __future__ import annotations
 
 import logging
-from typing import Any, Optional, List, Dict, Callable
-
-import voluptuous as vol
+from typing import Any, Optional, List, Dict
 
 from homeassistant.components.climate import (
     ClimateEntity,
@@ -20,9 +18,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import (
     ATTR_TEMPERATURE,
     PRECISION_WHOLE,
-    PRECISION_TENTHS,
     UnitOfTemperature,
-    CONF_NAME,
 )
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.entity import DeviceInfo
@@ -38,11 +34,10 @@ from .const import (
     ATTR_INDOOR_HUMIDITY,
     ATTR_FILTER_STATUS,
     ATTR_HOLD_STATUS,
-    APRILAIRE_TO_HA_HVAC_MODE,
+    HVAC_MODE_APRILAIRE_TO_HA,
     HA_TO_APRILAIRE_HVAC_MODE,
-    APRILAIRE_TO_HA_FAN_MODE,
+    FAN_MODE_APRILAIRE_TO_HA,
     HA_TO_APRILAIRE_FAN_MODE,
-    APRILAIRE_TO_HA_HVAC_ACTION,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -61,7 +56,7 @@ async def async_setup_entry(
     
     entities = []
     for device_id, device in devices.items():
-        entities.append(AprilaireClimate(coordinator, device_id))
+        entities.append(AprilaireClimate(coordinator, device))
     
     async_add_entities(entities, True)
 
@@ -79,7 +74,6 @@ class AprilaireClimate(CoordinatorEntity, ClimateEntity):
         HVACMode.COOL,
         HVACMode.AUTO,
         HVACMode.HEAT_COOL,  # Used for Auto mode
-        HVACMode.EMERGENCY_HEAT,
     ]
     _attr_supported_features = (
         ClimateEntityFeature.TARGET_TEMPERATURE |
@@ -95,23 +89,22 @@ class AprilaireClimate(CoordinatorEntity, ClimateEntity):
     def __init__(
         self,
         coordinator,
-        device_id: str,
+        device,
     ) -> None:
         """Initialize the thermostat."""
         super().__init__(coordinator)
-        self._device_id = device_id
-        self._device = coordinator.devices[device_id]
+        self._device = device
         
-        # Set unique_id based on device_id
-        self._attr_unique_id = f"{DOMAIN}_{device_id}_climate"
+        # Set unique_id based on device address
+        self._attr_unique_id = f"{DOMAIN}_{device.address}_climate"
         
         # Set device info
         self._attr_device_info = DeviceInfo(
-            identifiers={(DOMAIN, device_id)},
-            name=self._device.name,
+            identifiers={(DOMAIN, str(device.address))},
+            name=device.name,
             manufacturer="Aprilaire",
-            model=self._device.model,
-            sw_version=self._device.firmware_version,
+            model=device.model,
+            sw_version=device.firmware_version,
         )
 
     @property
@@ -129,7 +122,7 @@ class AprilaireClimate(CoordinatorEntity, ClimateEntity):
     def target_temperature(self) -> Optional[float]:
         """Return the temperature we try to reach."""
         state = self._device.get_state()
-        if self.hvac_mode == HVACMode.HEAT or self.hvac_mode == HVACMode.EMERGENCY_HEAT:
+        if self.hvac_mode == HVACMode.HEAT:
             return state.get("heat_setpoint")
         if self.hvac_mode == HVACMode.COOL:
             return state.get("cool_setpoint")
@@ -146,7 +139,7 @@ class AprilaireClimate(CoordinatorEntity, ClimateEntity):
         """Return hvac operation mode."""
         state = self._device.get_state()
         mode = state.get("mode")
-        return APRILAIRE_TO_HA_HVAC_MODE.get(mode, HVACMode.OFF)
+        return HVAC_MODE_APRILAIRE_TO_HA.get(mode, HVACMode.OFF)
 
     @property
     def hvac_action(self) -> Optional[HVACAction]:
@@ -170,7 +163,7 @@ class AprilaireClimate(CoordinatorEntity, ClimateEntity):
         """Return the fan setting."""
         state = self._device.get_state()
         fan_mode = state.get("fan_mode")
-        return APRILAIRE_TO_HA_FAN_MODE.get(fan_mode, FAN_AUTO)
+        return FAN_MODE_APRILAIRE_TO_HA.get(fan_mode, FAN_AUTO)
 
     @property
     def extra_state_attributes(self) -> Dict[str, Any]:
@@ -207,21 +200,21 @@ class AprilaireClimate(CoordinatorEntity, ClimateEntity):
             
         temperature = kwargs[ATTR_TEMPERATURE]
         
-        if self.hvac_mode == HVACMode.HEAT or self.hvac_mode == HVACMode.EMERGENCY_HEAT:
-            await self.coordinator.async_set_heat_setpoint(self._device_id, temperature)
+        if self.hvac_mode == HVACMode.HEAT:
+            await self._device.async_set_temperature(temperature, "HEAT")
         elif self.hvac_mode == HVACMode.COOL:
-            await self.coordinator.async_set_cool_setpoint(self._device_id, temperature)
+            await self._device.async_set_temperature(temperature, "COOL")
         elif self.hvac_mode == HVACMode.AUTO or self.hvac_mode == HVACMode.HEAT_COOL:
             # In AUTO mode, adjust the active setpoint based on current operation
             if self.hvac_action == HVACAction.HEATING:
-                await self.coordinator.async_set_heat_setpoint(self._device_id, temperature)
+                await self._device.async_set_temperature(temperature, "HEAT")
             elif self.hvac_action == HVACAction.COOLING:
-                await self.coordinator.async_set_cool_setpoint(self._device_id, temperature)
+                await self._device.async_set_temperature(temperature, "COOL")
             else:
                 # Default to heat setpoint if system is idle
-                await self.coordinator.async_set_heat_setpoint(self._device_id, temperature)
+                await self._device.async_set_temperature(temperature, "HEAT")
                 
-        # Request data update after setting temperature
+        # Request data update
         await self.coordinator.async_request_refresh()
 
     async def async_set_hvac_mode(self, hvac_mode: HVACMode) -> None:
@@ -231,9 +224,9 @@ class AprilaireClimate(CoordinatorEntity, ClimateEntity):
             _LOGGER.error("Unsupported HVAC mode: %s", hvac_mode)
             return
             
-        await self.coordinator.async_set_hvac_mode(self._device_id, aprilaire_mode)
+        await self._device.async_set_hvac_mode(hvac_mode)
         
-        # Request data update after setting mode
+        # Request data update
         await self.coordinator.async_request_refresh()
 
     async def async_set_fan_mode(self, fan_mode: str) -> None:
@@ -243,9 +236,9 @@ class AprilaireClimate(CoordinatorEntity, ClimateEntity):
             _LOGGER.error("Unsupported fan mode: %s", fan_mode)
             return
             
-        await self.coordinator.async_set_fan_mode(self._device_id, aprilaire_fan_mode)
+        await self._device.async_set_fan_mode(fan_mode)
         
-        # Request data update after setting fan mode
+        # Request data update
         await self.coordinator.async_request_refresh()
 
     async def async_turn_on(self) -> None:

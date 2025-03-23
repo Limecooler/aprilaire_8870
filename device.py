@@ -109,33 +109,128 @@ class AprilaireDevice:
         self._cos_enabled = False
         self._cos_flags = set()
 
-    async def async_initialize(self) -> bool:
-        """Initialize the device by querying its capabilities and current state.
+    async def _update_with_delays(self) -> None:
+        """Update device state with delays between commands."""
+        # Sequential command execution with delays
+        commands = [
+            "TEMP", "HUM", "OT", "MODE", "FAN", "SH", "SC", 
+            "HVAC", "HOLD", "FLTALM", "WPALM", "SYSALM", "DEHALM", "ERROR"
+        ]
         
-        Returns:
-            True if initialization was successful, False otherwise
-        """
+        for cmd in commands:
+            # Skip setpoint commands if not in appropriate mode
+            if cmd == "SH" and self._state.get("mode") not in ["HEAT", "AUTO", "EMHT"]:
+                continue
+            if cmd == "SC" and self._state.get("mode") not in ["COOL", "AUTO"]:
+                continue
+                
+            response = await self._send_command_with_retry(f"SN{self.address} {cmd}?")
+            
+            # Process the response to update state
+            if response:
+                self._process_state_response(cmd, response)
+                
+            # Small delay between commands
+            await asyncio.sleep(0.3)
+
+    def _process_state_response(self, command: str, response: str) -> None:
+        """Process a state query response to update internal state."""
+        # Extract value from response
+        value = None
+        if "=" in response:
+            parts = response.split("=", 1)
+            if len(parts) > 1:
+                value = parts[1].strip()
+        
+        if not value:
+            return
+            
+        # Update state based on command
+        if command == "TEMP":
+            self._state["temperature"] = self._parse_temperature(value)
+        elif command == "HUM":
+            self._state["humidity"] = self._parse_humidity(value)
+        elif command == "OT":
+            self._state["outdoor_temperature"] = self._parse_temperature(value)
+        elif command == "MODE":
+            self._state["mode"] = value
+        elif command == "FAN":
+            self._state["fan_mode"] = value
+        elif command == "SH":
+            self._state["heat_setpoint"] = self._parse_temperature(value)
+        elif command == "SC":
+            self._state["cool_setpoint"] = self._parse_temperature(value)
+        elif command == "HVAC":
+            self._state["hvac_status"] = value
+        elif command == "HOLD":
+            self._state["hold_status"] = value
+        elif command == "FLTALM":
+            self._state["filter_alarm"] = (value == "ON")
+        elif command == "WPALM":
+            self._state["water_panel_alarm"] = (value == "ON")
+        elif command == "SYSALM":
+            self._state["system_alarm"] = (value == "ON")
+        elif command == "DEHALM":
+            self._state["dehumidifier_alarm"] = (value == "ON")
+        elif command == "ERROR":
+            self._state["error_status"] = value
+
+    async def _enable_cos_with_retry(self, flags: Set[str] = None) -> bool:
+        """Enable COS functionality with retries."""
+        if flags is None:
+            flags = DEFAULT_COS_FLAGS
+            
+        retry_count = 3
+        for attempt in range(retry_count):
+            try:
+                # Add delay before CR command
+                await asyncio.sleep(0.5)
+                
+                # Set CR=NORMAL with retry
+                cr_result = False
+                for cr_try in range(3):
+                    cr_response = await self._send_command_with_retry(f"SN{self.address} CR=NORMAL", retries=1)
+                    if cr_response and "NORMAL" in cr_response:
+                        cr_result = True
+                        break
+                    await asyncio.sleep(0.5)
+                    
+                if not cr_result:
+                    _LOGGER.warning("Failed to set CR=NORMAL on attempt %d for thermostat %s", 
+                                  attempt, self.address)
+                    await asyncio.sleep(1.0)
+                    continue
+                    
+                # Enable COS flags one by one with delays
+                success = True
+                for flag in flags:
+                    await asyncio.sleep(0.5)  # Delay between flags
+                    result = await self._send_command_with_retry(f"SN{self.address} {flag}=ON", retries=1)
+                    if not result or "ON" not in result:
+                        _LOGGER.warning("Failed to enable COS flag %s on thermostat %s", flag, self.address)
+                        success = False
+                    else:
+                        self._cos_flags.add(flag)
+                        
+                self._cos_enabled = success
+                return success
+                
+            except Exception as err:
+                _LOGGER.error("Error enabling COS on attempt %d for thermostat %s: %s", 
+                            attempt, self.address, err)
+                await asyncio.sleep(1.0)
+                
+        _LOGGER.error("Failed to enable COS after %d attempts on thermostat %s", 
+                     retry_count, self.address)
+        self._cos_enabled = False
+        return False
+
+    async def async_initialize(self) -> bool:
+        """Initialize the device with improved error handling and delays."""
         try:
-            # Query basic device information with increased wait time
-            # Create a manual command and wait for response instead of using the protocol method
-            formatted_command = f"SN{self.address} ID?"
-            await self.protocol._connection.async_send_command(formatted_command)
-            
-            # Wait longer for response - thermostats need time to respond
-            await asyncio.sleep(3)
-            
-            # Retrieve any responses received
-            responses = []
-            if hasattr(self.protocol._connection, 'get_received_messages'):
-                responses = self.protocol._connection.get_received_messages()
-                _LOGGER.debug("ID responses for device %s: %s", self.address, responses)
-            
-            # Process responses to find ID information
-            model_info = None
-            for response in responses:
-                if response.startswith(f"SN{self.address}") and ("MODEL#" in response or "ID" in response):
-                    model_info = response
-                    break
+            # Query basic device information
+            await asyncio.sleep(0.5)  # Add delay before first command
+            model_info = await self._send_command_with_retry(f"SN{self.address} ID?", retries=3)
             
             if not model_info:
                 _LOGGER.error("Failed to query device information for thermostat %s", self.address)
@@ -144,56 +239,33 @@ class AprilaireDevice:
             # Parse model info
             self._parse_model_info(model_info)
             
-            # Query equipment configuration - also with manual wait
-            formatted_command = f"SN{self.address} EQUIPCONFIG?"
-            await self.protocol._connection.async_send_command(formatted_command)
-            await asyncio.sleep(3)
+            # Add delay between commands
+            await asyncio.sleep(0.5)
             
-            if hasattr(self.protocol._connection, 'get_received_messages'):
-                responses = self.protocol._connection.get_received_messages()
-                _LOGGER.debug("EQUIPCONFIG responses for device %s: %s", self.address, responses)
+            # Query equipment configuration
+            equip_config = await self._send_command_with_retry(f"SN{self.address} EQUIPCONFIG?", retries=3)
+            if equip_config:
+                self._parse_equipment_config(equip_config)
                 
-                equip_config = None
-                for response in responses:
-                    if response.startswith(f"SN{self.address}") and "EQUIPCONFIG" in response:
-                        if "=" in response:
-                            parts = response.split("=", 1)
-                            if len(parts) > 1:
-                                equip_config = parts[1].strip()
-                        else:
-                            equip_config = response
-                        break
+            # Add delay between commands
+            await asyncio.sleep(0.5)
+            
+            # Query controller type
+            controller_type = await self._send_command_with_retry(f"SN{self.address} CT?", retries=3)
+            if controller_type:
+                self._parse_controller_type(controller_type)
                 
-                if equip_config:
-                    self._parse_equipment_config(equip_config)
-            
-            # Query controller type - also with manual wait
-            formatted_command = f"SN{self.address} CT?"
-            await self.protocol._connection.async_send_command(formatted_command)
-            await asyncio.sleep(3)
-            
-            if hasattr(self.protocol._connection, 'get_received_messages'):
-                responses = self.protocol._connection.get_received_messages()
-                _LOGGER.debug("CT responses for device %s: %s", self.address, responses)
+            # Add delay between commands
+            await asyncio.sleep(0.5)
                 
-                controller_type = None
-                for response in responses:
-                    if response.startswith(f"SN{self.address}") and "CT" in response:
-                        if "=" in response:
-                            parts = response.split("=", 1)
-                            if len(parts) > 1:
-                                controller_type = parts[1].strip()
-                        break
-                
-                if controller_type:
-                    self._parse_controller_type(controller_type)
+            # Get initial state values - with sequential execution and delays
+            await self._update_with_delays()
             
-            # Continue with initialization...
-            # Get initial state values
-            await self.async_update()
+            # Add delay before COS setup
+            await asyncio.sleep(1.0)
             
-            # Enable COS functionality
-            await self.async_enable_cos(DEFAULT_COS_FLAGS)
+            # Enable COS functionality with multiple retries
+            cos_result = await self._enable_cos_with_retry(DEFAULT_COS_FLAGS)
             
             self.available = True
             return True
@@ -279,6 +351,57 @@ class AprilaireDevice:
             _LOGGER.error("Error updating thermostat %s: %s", self.address, err)
             self.available = False
             return False
+
+    def _find_matching_response(self, responses: List[str], command: str) -> Optional[str]:
+        """Find the response that matches the command."""
+        if not responses:
+            return None
+            
+        # Extract command parts
+        cmd_parts = command.strip().split(" ")
+        if len(cmd_parts) < 2:
+            return None
+            
+        device_part = cmd_parts[0]  # e.g., "SN1"
+        command_part = cmd_parts[1]  # e.g., "ID?"
+        
+        # First, look for exact matches
+        for response in responses:
+            if response.startswith(device_part) and command_part.rstrip("?") in response:
+                return response
+                
+        # If no exact match, return first response for this device
+        for response in responses:
+            if response.startswith(device_part):
+                return response
+                
+        return None
+
+    async def _send_command_with_retry(self, command: str, retries: int = 2, timeout: float = 3.0) -> Optional[str]:
+        """Send command with retry mechanism."""
+        for attempt in range(retries + 1):
+            if attempt > 0:
+                _LOGGER.debug("Retry %d for command %s on device %s", attempt, command, self.address)
+                await asyncio.sleep(1.0)  # Longer delay for retries
+                
+            try:
+                # Use the improved command method from connection if available
+                if hasattr(self.protocol._connection, "async_send_command_with_response"):
+                    response = await self.protocol._connection.async_send_command_with_response(command, timeout)
+                else:
+                    # Fallback to standard method
+                    self.protocol._connection.get_received_messages()  # Clear messages
+                    await self.protocol._connection.async_send_command(command)
+                    await asyncio.sleep(2.0)  # Wait for response
+                    responses = self.protocol._connection.get_received_messages()
+                    response = self._find_matching_response(responses, command)
+                    
+                if response:
+                    return response
+            except Exception as err:
+                _LOGGER.error("Error sending command %s (attempt %d): %s", command, attempt, err)
+                
+        return None
 
     async def async_send_command(self, command: str, value: Any = None) -> Any:
         """Send a command to the thermostat.

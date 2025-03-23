@@ -147,19 +147,20 @@ class AprilaireConnectionBase(ABC):
     async def _async_read_data(self) -> Optional[str]:
         """Read data from the connection."""
         pass
-               
+                   
     async def _async_process_data(self, data: Any) -> None:
-        """Process incoming data."""
+        """Process incoming data with improved binary handling."""
         # Convert binary data to string if needed
         if isinstance(data, bytes):
             try:
-                # Use a more robust decoding approach
+                # More robust decoding
                 data_str = ""
                 for byte in data:
                     if 32 <= byte <= 126:  # Printable ASCII range
                         data_str += chr(byte)
                     elif byte in (10, 13):  # Line feed or carriage return
                         data_str += '\r'
+                    # Ignore other non-printable bytes
                 data = data_str
             except UnicodeDecodeError:
                 _LOGGER.warning("Unable to decode binary data to ASCII")
@@ -254,7 +255,26 @@ class SerialServerConnection(AprilaireConnectionBase):
         self._port = config.get("port", DEFAULT_PORT)
         self._reader = None
         self._writer = None
-        
+
+    def _safe_decode(self, data: bytes) -> str:
+        """Safely decode binary data to string, filtering out problematic bytes."""
+        if not data:
+            return ""
+            
+        # Convert to string, ignoring problematic characters
+        try:
+            # First try standard decoding
+            return data.decode("ascii", errors="replace")
+        except UnicodeDecodeError:
+            # Fall back to manual character filtering
+            result = ""
+            for byte in data:
+                if 32 <= byte <= 126 or byte in (10, 13):  # Printable ASCII or newline/CR
+                    result += chr(byte)
+                else:
+                    result += "?"  # Replace non-printable bytes
+            return result
+
     async def async_connect(self) -> bool:
         """Establish connection to the serial server."""
         if self.is_connected():
@@ -313,28 +333,31 @@ class SerialServerConnection(AprilaireConnectionBase):
             
         self.state = STATE_DISCONNECTED
         _LOGGER.debug("Disconnected from serial server")
-        
-    async def async_send_command(self, command: str) -> None:
-        """Send a command to the thermostat network."""
+    
+     async def async_send_command(self, command: str) -> None:
+        """Send a command with improved error handling."""
         if not self.is_connected():
             _LOGGER.error("Cannot send command, not connected")
             raise HomeAssistantError("Not connected to serial server")
-            
+
         try:
             # Ensure command ends with carriage return
             if not command.endswith("\r"):
                 command += "\r"
-                
+
             _LOGGER.debug("Sending command: %s", command.strip())
             self._writer.write(command)
             await self._writer.drain()
-            
+
+            # Small delay after sending to avoid overwhelming the connection
+            await asyncio.sleep(0.1)
+
         except Exception as err:  # pylint: disable=broad-except
             _LOGGER.error("Error sending command: %s", err)
             self.state = STATE_ERROR
             await self.async_reconnect()
             raise HomeAssistantError(f"Failed to send command: {err}")
-                    
+    
     async def _async_read_data(self) -> Optional[str]:
         """Read data from the telnet connection."""
         if not self.is_connected() or self._reader is None:
@@ -354,6 +377,72 @@ class SerialServerConnection(AprilaireConnectionBase):
             
         except Exception as err:  # pylint: disable=broad-except
             _LOGGER.error("Error reading data: %s", err)
+            self.state = STATE_ERROR
+            await self.async_reconnect()
+            return None
+
+    async def async_send_command_with_response(self, command: str, timeout: float = 3.0) -> Optional[str]:
+        """Send a command and wait for response with improved handling.
+
+        Args:
+            command: Command to send
+            timeout: Timeout in seconds
+
+        Returns:
+            Response string if received, None otherwise
+        """
+        if not self.is_connected():
+            _LOGGER.error("Cannot send command, not connected")
+            return None
+
+        try:
+            # Clear any previous received messages
+            self._received_messages.clear()
+
+            # Ensure command ends with carriage return
+            if not command.endswith("\r"):
+                command += "\r"
+
+            _LOGGER.debug("Sending command: %s", command.strip())
+            self._writer.write(command)
+            await self._writer.drain()
+
+            # Wait for response with timeout
+            start_time = time.time()
+            while (time.time() - start_time) < timeout:
+                # Check for responses
+                if self._received_messages:
+                    # Look for a response matching this command
+                    device_prefix = None
+                    if command.startswith("SN"):
+                        # Extract device ID from command (SNx)
+                        parts = command.strip().split(" ")[0]
+                        device_prefix = parts
+
+                    for msg in self._received_messages:
+                        # If we have a device prefix, check if response starts with it
+                        if device_prefix and msg.startswith(device_prefix):
+                            # Also check if the command is in the response
+                            cmd_parts = command.strip().split(" ")
+                            if len(cmd_parts) > 1 and cmd_parts[1] in msg:
+                                self._received_messages.remove(msg)
+                                return msg
+
+                    # If no exact match found but we have responses for this device
+                    if device_prefix:
+                        for msg in self._received_messages:
+                            if msg.startswith(device_prefix):
+                                self._received_messages.remove(msg)
+                                return msg
+
+                # Wait a bit before checking again
+                await asyncio.sleep(0.1)
+
+            _LOGGER.warning("No response received for command: %s", command.strip())
+            return None
+
+        except Exception as err:
+            _LOGGER.error("Error sending command: %s", err)
             self.state = STATE_ERROR
             await self.async_reconnect()
             return None
@@ -401,6 +490,25 @@ class ComPortConnection(AprilaireConnectionBase):
         self._serial_protocol = None
         self._read_event = asyncio.Event()
         
+    def _safe_decode(self, data: bytes) -> str:
+        """Safely decode binary data to string, filtering out problematic bytes."""
+        if not data:
+            return ""
+            
+        # Convert to string, ignoring problematic characters
+        try:
+            # First try standard decoding
+            return data.decode("ascii", errors="replace")
+        except UnicodeDecodeError:
+            # Fall back to manual character filtering
+            result = ""
+            for byte in data:
+                if 32 <= byte <= 126 or byte in (10, 13):  # Printable ASCII or newline/CR
+                    result += chr(byte)
+                else:
+                    result += "?"  # Replace non-printable bytes
+            return result
+
     async def async_connect(self) -> bool:
         """Establish connection to the COM port."""
         if self.is_connected():

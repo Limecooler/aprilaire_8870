@@ -275,3 +275,33 @@ EQUIPMENT_TYPE_HEAT_PUMP: Final = "heat_pump"
 
 # Logger name
 LOGGER_NAME: Final = f"{DOMAIN}"
+
+# Mode mapping between HA and Aprilaire
+HVAC_MODE_APRILAIRE_TO_HA = {
+    "OFF": HVACMode.OFF,
+    "HEAT": HVACMode.HEAT,
+    "COOL": HVACMode.COOL,
+    "AUTO": HVACMode.AUTO,
+    "EMHT": HVACMode.HEAT_COOL,  # Map Emergency Heat to HEAT_COOL
+}
+
+HA_TO_APRILAIRE_HVAC_MODE = {
+    HVACMode.OFF: "OFF",
+    HVACMode.HEAT: "HEAT",
+    HVACMode.COOL: "COOL",
+    HVACMode.AUTO: "AUTO",
+    HVACMode.HEAT_COOL: "AUTO",  # Both map to AUTO
+}
+
+# Fan mode mapping between HA and Aprilaire
+FAN_MODE_APRILAIRE_TO_HA = {
+    "AUTO": FAN_AUTO,
+    "ON": FAN_ON,
+    "CIRC": "circulate",
+}
+
+HA_TO_APRILAIRE_FAN_MODE = {
+    FAN_AUTO: "AUTO",
+    FAN_ON: "ON",
+    "circulate": "CIRC",
+}
