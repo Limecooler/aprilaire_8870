@@ -7,6 +7,13 @@ from homeassistant.const import (
     CONF_NAME,
     CONF_SCAN_INTERVAL,
     Platform,
+    UnitOfTemperature,
+)
+from homeassistant.components.climate.const import (
+    HVACMode,
+    HVACAction,
+    FAN_AUTO,
+    FAN_ON,
 )
 
 # Integration domain
@@ -135,49 +142,25 @@ SENSOR_OUTDOOR_TEMPERATURE: Final = "outdoor_temperature"
 SENSOR_OUTDOOR_HUMIDITY: Final = "outdoor_humidity"
 SENSOR_REMOTE_TEMPERATURE: Final = "remote_temperature"
 
-# Mode mapping between HA and Aprilaire
-APRILAIRE_TO_HA_HVAC_MODE: Final = {
-    "OFF": "off",
-    "HEAT": "heat",
-    "COOL": "cool",
-    "AUTO": "auto",
-    "EMHT": "heat_cool",  # Use heat_cool for Auto mode
-}
+# HVAC Mode constants
+MODE_OFF: Final = "OFF"        # System off
+MODE_HEAT: Final = "HEAT"      # Heat mode
+MODE_COOL: Final = "COOL"      # Cool mode
+MODE_AUTO: Final = "AUTO"      # Auto mode
+MODE_EMHT: Final = "EMHT"      # Emergency heat mode
 
-HA_TO_APRILAIRE_HVAC_MODE: Final = {
-    "off": "OFF",
-    "heat": "HEAT",
-    "cool": "COOL",
-    "auto": "AUTO",
-    "heat_cool": "AUTO",  # Both map to AUTO
-    "emergency_heating": "EMHT",
-}
+# Fan Mode constants
+FAN_AUTO_MODE: Final = "AUTO"       # Fan auto mode
+FAN_ON_MODE: Final = "ON"           # Fan on mode
+FAN_CIRC: Final = "CIRC"       # Fan circulation mode
 
-# Fan mode mapping between HA and Aprilaire
-APRILAIRE_TO_HA_FAN_MODE: Final = {
-    "AUTO": "auto",
-    "ON": "on",
-    "CIRC": "circulate",
-}
+# Controller Type constants
+CONTROLLER_TYPE_TEMP: Final = "0"    # Temperature controller
+CONTROLLER_TYPE_HUMID: Final = "1"   # Humidity controller
 
-HA_TO_APRILAIRE_FAN_MODE: Final = {
-    "auto": "AUTO",
-    "on": "ON",
-    "circulate": "CIRC",
-}
-
-# HVAC action mapping
-APRILAIRE_TO_HA_HVAC_ACTION: Final = {
-    # Will be populated based on relay status interpretation
-    "heating": "heating",
-    "cooling": "cooling",
-    "idle": "idle",
-    "fan": "fan_only",
-}
-
-# Valid modes and ranges
-VALID_HVAC_MODES: Final = ["OFF", "HEAT", "COOL", "AUTO", "EMHT"]
-VALID_FAN_MODES: Final = ["AUTO", "ON", "CIRC"]
+# Equipment Type constants
+EQUIPMENT_TYPE_HEAT_COOL: Final = "heat_cool"
+EQUIPMENT_TYPE_HEAT_PUMP: Final = "heat_pump"
 
 # Temperature ranges
 MIN_TEMP_F: Final = 40
@@ -188,10 +171,6 @@ MAX_TEMP_C: Final = 32
 # Humidity ranges
 MIN_HUMIDITY: Final = 10
 MAX_HUMIDITY: Final = 90
-
-# Equipment types
-EQUIPMENT_TYPE_HEAT_COOL: Final = "heat_cool"
-EQUIPMENT_TYPE_HEAT_PUMP: Final = "heat_pump"
 
 # Service constants
 SERVICE_SET_TEXT_MESSAGE: Final = "set_text_message"
@@ -253,26 +232,6 @@ COS_FAN: Final = COS_FLAG_FAN
 COS_ALARMS: Final = COS_FLAG_ALARMS
 COS_ERRORS: Final = COS_FLAG_ERRORS
 
-# HVAC Mode constants
-MODE_OFF: Final = "OFF"        # System off
-MODE_HEAT: Final = "HEAT"      # Heat mode
-MODE_COOL: Final = "COOL"      # Cool mode
-MODE_AUTO: Final = "AUTO"      # Auto mode
-MODE_EMHT: Final = "EMHT"      # Emergency heat mode
-
-# Fan Mode constants
-FAN_AUTO: Final = "AUTO"       # Fan auto mode
-FAN_ON: Final = "ON"           # Fan on mode
-FAN_CIRC: Final = "CIRC"       # Fan circulation mode
-
-# Controller Type constants
-CONTROLLER_TYPE_TEMP: Final = "0"    # Temperature controller
-CONTROLLER_TYPE_HUMID: Final = "1"   # Humidity controller
-
-# Equipment Type constants
-EQUIPMENT_TYPE_HEAT_COOL: Final = "heat_cool"
-EQUIPMENT_TYPE_HEAT_PUMP: Final = "heat_pump"
-
 # Logger name
 LOGGER_NAME: Final = f"{DOMAIN}"
 
@@ -305,3 +264,4 @@ HA_TO_APRILAIRE_FAN_MODE = {
     FAN_ON: "ON",
     "circulate": "CIRC",
 }
+

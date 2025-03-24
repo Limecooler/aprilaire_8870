@@ -334,7 +334,7 @@ class SerialServerConnection(AprilaireConnectionBase):
         self.state = STATE_DISCONNECTED
         _LOGGER.debug("Disconnected from serial server")
     
-     async def async_send_command(self, command: str) -> None:
+    async def async_send_command(self, command: str) -> None:
         """Send a command with improved error handling."""
         if not self.is_connected():
             _LOGGER.error("Cannot send command, not connected")
