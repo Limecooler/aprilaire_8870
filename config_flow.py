@@ -203,7 +203,7 @@ class AprilaireConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     async def async_step_device_discovery(
         self, user_input: dict[str, Any] | None = None
     ) -> FlowResult:
-        """Discover thermostats using the established connection."""
+        """Discover thermostats using the established connection, but minimally."""
         discovered_thermostats = []
         error = None
         
@@ -238,7 +238,8 @@ class AprilaireConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             discovered_thermostats.sort()
             _LOGGER.debug("Discovered thermostats: %s", discovered_thermostats)
             
-            # Get info about first thermostat to confirm it's an Aprilaire 8870
+            # Get minimal info about first thermostat to confirm it's an Aprilaire 8870
+            # without doing full initialization
             if discovered_thermostats:
                 model_cmd = f"SN{discovered_thermostats[0]} ID?"
                 _LOGGER.debug("Sending model query: %s", model_cmd)
@@ -272,7 +273,7 @@ class AprilaireConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         if not discovered_thermostats:
             return self.async_abort(reason="no_devices_found")
         
-        # Add discovered thermostats to config
+        # Add discovered thermostats to config WITHOUT full initialization
         self.connection_config["discovered_thermostats"] = discovered_thermostats
         
         # Set default values

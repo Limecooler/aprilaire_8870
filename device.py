@@ -112,12 +112,11 @@ class AprilaireDevice:
     async def _update_with_delays(self) -> None:
         """Update device state with delays between commands."""
         # Sequential command execution with delays
-        commands = [
-            "TEMP", "HUM", "OT", "MODE", "FAN", "SH", "SC", 
-            "HVAC", "HOLD", "FLTALM", "WPALM", "SYSALM", "DEHALM", "ERROR"
-        ]
+        essential_commands = ["TEMP", "MODE", "FAN", "HVAC", "HOLD"]
+        optional_commands = ["HUM", "OT", "FLTALM", "WPALM", "SYSALM", "DEHALM", "ERROR"]
         
-        for cmd in commands:
+        # First handle essential commands that should not be skipped
+        for cmd in essential_commands:
             # Skip setpoint commands if not in appropriate mode
             if cmd == "SH" and self._state.get("mode") not in ["HEAT", "AUTO", "EMHT"]:
                 continue
@@ -132,6 +131,26 @@ class AprilaireDevice:
                 
             # Small delay between commands
             await asyncio.sleep(0.3)
+        
+        # Then handle optional commands that can be skipped if they fail
+        for cmd in optional_commands:
+            try:
+                response = await self._send_command_with_retry(
+                    f"SN{self.address} {cmd}?", 
+                    retries=1,  # Reduced retries for optional commands
+                    allow_skip=True  # Allow skipping on failure
+                )
+                
+                # Process the response to update state
+                if response:
+                    self._process_state_response(cmd, response)
+                    
+                # Small delay between commands
+                await asyncio.sleep(0.3)
+            except Exception as err:
+                _LOGGER.debug(f"Skipping optional command {cmd} after failure: {err}")
+                continue
+
 
     def _process_state_response(self, command: str, response: str) -> None:
         """Process a state query response to update internal state."""
@@ -176,16 +195,18 @@ class AprilaireDevice:
             self._state["error_status"] = value
 
     async def _enable_cos_with_retry(self, flags: Set[str] = None) -> bool:
-        """Enable COS functionality with retries."""
+        """Enable COS functionality with retries and skip unsupported flags."""
         if flags is None:
             flags = DEFAULT_COS_FLAGS
-            
+                
         retry_count = 3
+        supported_flags = set()
+        
         for attempt in range(retry_count):
             try:
                 # Add delay before CR command
                 await asyncio.sleep(0.5)
-                
+                    
                 # Set CR=NORMAL with retry
                 cr_result = False
                 for cr_try in range(3):
@@ -194,41 +215,51 @@ class AprilaireDevice:
                         cr_result = True
                         break
                     await asyncio.sleep(0.5)
-                    
+                        
                 if not cr_result:
                     _LOGGER.warning("Failed to set CR=NORMAL on attempt %d for thermostat %s", 
                                   attempt, self.address)
                     await asyncio.sleep(1.0)
                     continue
-                    
-                # Enable COS flags one by one with delays
-                success = True
+                        
+                # Enable COS flags one by one with delays, skipping ones that fail
+                success = False
                 for flag in flags:
                     await asyncio.sleep(0.5)  # Delay between flags
-                    result = await self._send_command_with_retry(f"SN{self.address} {flag}=ON", retries=1)
-                    if not result or "ON" not in result:
-                        _LOGGER.warning("Failed to enable COS flag %s on thermostat %s", flag, self.address)
-                        success = False
-                    else:
-                        self._cos_flags.add(flag)
-                        
-                self._cos_enabled = success
-                return success
-                
+                    try:
+                        result = await self._send_command_with_retry(
+                            f"SN{self.address} {flag}=ON",
+                            retries=1,
+                            allow_skip=True
+                        )
+                        if result and "ON" in result:
+                            supported_flags.add(flag)
+                            success = True
+                        else:
+                            _LOGGER.debug("Flag %s not supported on thermostat %s", flag, self.address)
+                    except Exception as err:
+                        _LOGGER.debug("Error enabling flag %s on thermostat %s: %s", flag, self.address, err)
+                    
+                # If we've enabled at least some flags, consider it successful
+                if success:
+                    self._cos_flags = supported_flags
+                    self._cos_enabled = True
+                    _LOGGER.info("Enabled COS with %d flags on thermostat %s", len(supported_flags), self.address)
+                    return True
+                    
             except Exception as err:
                 _LOGGER.error("Error enabling COS on attempt %d for thermostat %s: %s", 
                             attempt, self.address, err)
                 await asyncio.sleep(1.0)
-                
+                    
         _LOGGER.error("Failed to enable COS after %d attempts on thermostat %s", 
                      retry_count, self.address)
-        self._cos_enabled = False
         return False
 
     async def async_initialize(self) -> bool:
-        """Initialize the device with improved error handling and delays."""
+        """Initialize the device with improved error handling and minimal required commands."""
         try:
-            # Query basic device information
+            # Query basic device information - this is essential
             await asyncio.sleep(0.5)  # Add delay before first command
             model_info = await self._send_command_with_retry(f"SN{self.address} ID?", retries=3)
             
@@ -242,31 +273,76 @@ class AprilaireDevice:
             # Add delay between commands
             await asyncio.sleep(0.5)
             
-            # Query equipment configuration
-            equip_config = await self._send_command_with_retry(f"SN{self.address} EQUIPCONFIG?", retries=3)
-            if equip_config:
-                self._parse_equipment_config(equip_config)
+            # Query essential device capabilities
+            # These queries are important but we continue even if they fail
+            try:
+                # Equipment configuration
+                equip_config = await self._send_command_with_retry(
+                    f"SN{self.address} EQUIPCONFIG?", 
+                    retries=2,
+                    allow_skip=True
+                )
+                if equip_config:
+                    self._parse_equipment_config(equip_config)
+                    
+                # Add delay between commands
+                await asyncio.sleep(0.5)
+                
+                # Controller type
+                controller_type = await self._send_command_with_retry(
+                    f"SN{self.address} CT?", 
+                    retries=2,
+                    allow_skip=True
+                )
+                if controller_type:
+                    self._parse_controller_type(controller_type)
+            except Exception as cap_ex:
+                _LOGGER.warning("Error querying capabilities for thermostat %s: %s", self.address, cap_ex)
+                # Continue with default capabilities
                 
             # Add delay between commands
             await asyncio.sleep(0.5)
-            
-            # Query controller type
-            controller_type = await self._send_command_with_retry(f"SN{self.address} CT?", retries=3)
-            if controller_type:
-                self._parse_controller_type(controller_type)
                 
-            # Add delay between commands
-            await asyncio.sleep(0.5)
-                
-            # Get initial state values - with sequential execution and delays
-            await self._update_with_delays()
+            # Get minimal essential state - just enough to prove device works
+            try:
+                # Get current temperature and mode
+                temp_response = await self._send_command_with_retry(
+                    f"SN{self.address} TEMP?", 
+                    retries=2
+                )
+                if temp_response:
+                    self._process_state_response("TEMP", temp_response)
+                    
+                mode_response = await self._send_command_with_retry(
+                    f"SN{self.address} MODE?", 
+                    retries=2
+                )
+                if mode_response:
+                    self._process_state_response("MODE", mode_response)
+                    
+                # Setpoints are also essential for climate control
+                if self._state.get("mode") in ["HEAT", "AUTO", "EMHT"]:
+                    heat_sp = await self._send_command_with_retry(
+                        f"SN{self.address} SH?", 
+                        retries=2,
+                        allow_skip=True
+                    )
+                    if heat_sp:
+                        self._process_state_response("SH", heat_sp)
+                        
+                if self._state.get("mode") in ["COOL", "AUTO"]:
+                    cool_sp = await self._send_command_with_retry(
+                        f"SN{self.address} SC?", 
+                        retries=2,
+                        allow_skip=True
+                    )
+                    if cool_sp:
+                        self._process_state_response("SC", cool_sp)
+            except Exception as state_ex:
+                _LOGGER.warning("Error getting initial state for thermostat %s: %s", self.address, state_ex)
+                # Continue even with partial state
             
-            # Add delay before COS setup
-            await asyncio.sleep(1.0)
-            
-            # Enable COS functionality with multiple retries
-            cos_result = await self._enable_cos_with_retry(DEFAULT_COS_FLAGS)
-            
+            # Mark device as available now that we have basic functionality
             self.available = True
             return True
             
@@ -275,81 +351,94 @@ class AprilaireDevice:
             self.available = False
             return False
 
+
     async def async_update(self) -> bool:
-        """Update device state by querying the thermostat.
-        
-        Returns:
-            True if update was successful, False otherwise
-        """
+        """Update device state by querying the thermostat with error handling."""
+        if not self.available:
+            return False
+            
+        success = False
+            
         try:
-            # Query current temperature
-            if self.capabilities["controller_type"] == CONTROLLER_TYPE_TEMP:
-                temp = await self.protocol.execute_query_command(self.address, CMD_TEMP)
-                if temp is not None:
-                    self._state["temperature"] = self._parse_temperature(temp)
+            # Query essential items
+            essential_commands = [
+                ("TEMP", CMD_TEMP),
+                ("MODE", CMD_MODE),
+                ("FAN", CMD_FAN),
+                ("HVAC", CMD_HVAC),
+                ("HOLD", CMD_HOLD)
+            ]
             
-            # Query current humidity if available
-            if self.capabilities["controller_type"] == CONTROLLER_TYPE_HUMID:
-                hum = await self.protocol.execute_query_command(self.address, CMD_HUM)
-                if hum is not None:
-                    self._state["humidity"] = self._parse_humidity(hum)
-            else:
-                # Try to get built-in humidity sensor reading
-                hum = await self.protocol.execute_query_command(self.address, CMD_BIHUM)
-                if hum is not None:
-                    self._state["humidity"] = self._parse_humidity(hum)
-            
-            # Query outdoor temperature if available
-            ot = await self.protocol.execute_query_command(self.address, CMD_OT)
-            if ot is not None:
-                self._state["outdoor_temperature"] = self._parse_temperature(ot)
-            
-            # Query current mode
-            mode = await self.protocol.execute_query_command(self.address, CMD_MODE)
-            if mode is not None:
-                self._state["mode"] = mode
-            
-            # Query current fan mode
-            fan = await self.protocol.execute_query_command(self.address, CMD_FAN)
-            if fan is not None:
-                self._state["fan_mode"] = fan
-            
-            # Query setpoints based on controller type
-            if self.capabilities["controller_type"] == CONTROLLER_TYPE_TEMP:
-                # Query heat setpoint if in heat or auto mode
-                if self._state["mode"] in [MODE_HEAT, MODE_AUTO, MODE_EMHT]:
-                    sh = await self.protocol.execute_query_command(self.address, CMD_SH)
-                    if sh is not None:
-                        self._state["heat_setpoint"] = self._parse_temperature(sh)
+            # Add setpoint queries based on current mode
+            mode = self._state.get("mode")
+            if mode in [MODE_HEAT, MODE_AUTO, MODE_EMHT]:
+                essential_commands.append(("SH", CMD_SH))
+            if mode in [MODE_COOL, MODE_AUTO]:
+                essential_commands.append(("SC", CMD_SC))
                 
-                # Query cool setpoint if in cool or auto mode
-                if self._state["mode"] in [MODE_COOL, MODE_AUTO]:
-                    sc = await self.protocol.execute_query_command(self.address, CMD_SC)
-                    if sc is not None:
-                        self._state["cool_setpoint"] = self._parse_temperature(sc)
+            # Process essential commands
+            for cmd_name, cmd in essential_commands:
+                try:
+                    response = await self.protocol.execute_query_command(self.address, cmd)
+                    if response is not None:
+                        if cmd_name == "TEMP":
+                            self._state["temperature"] = self._parse_temperature(response)
+                            success = True  # Mark success if we at least get temperature
+                        elif cmd_name == "MODE":
+                            self._state["mode"] = response
+                            success = True  # Also consider success if we get mode
+                        elif cmd_name == "FAN":
+                            self._state["fan_mode"] = response
+                        elif cmd_name == "HVAC":
+                            self._state["hvac_status"] = response
+                        elif cmd_name == "HOLD":
+                            self._state["hold_status"] = response
+                        elif cmd_name == "SH":
+                            self._state["heat_setpoint"] = self._parse_temperature(response)
+                        elif cmd_name == "SC":
+                            self._state["cool_setpoint"] = self._parse_temperature(response)
+                except Exception as ex:
+                    _LOGGER.warning("Error querying %s for device %s: %s", cmd, self.address, ex)
+                        
+            # Optional items - process with minimal retries and allow skipping
+            optional_commands = [
+                ("HUM", CMD_HUM),
+                ("OT", CMD_OT),
+                ("FLTALM", "FLTALM"),
+                ("WPALM", "WPALM"),
+                ("SYSALM", "SYSALM"),
+                ("DEHALM", "DEHALM"),
+                ("ERROR", "ERROR")
+            ]
             
-            # Query HVAC status (relay outputs)
-            hvac = await self.protocol.execute_query_command(self.address, CMD_HVAC)
-            if hvac is not None:
-                self._state["hvac_status"] = hvac
-            
-            # Query hold status
-            hold = await self.protocol.execute_query_command(self.address, CMD_HOLD)
-            if hold is not None:
-                self._state["hold_status"] = hold
-            
-            # Update alarm statuses (filter, water panel, etc.)
-            await self._update_alarm_statuses()
-            
-            # Update error status
-            await self._update_error_status()
-            
-            self.available = True
-            return True
-            
+            # Process optional commands without failing if they don't work
+            for cmd_name, cmd in optional_commands:
+                try:
+                    response = await self.protocol.execute_query_command(
+                        self.address, cmd, timeout=2.0  # Shorter timeout for optional commands
+                    )
+                    if response is not None:
+                        if cmd_name == "HUM":
+                            self._state["humidity"] = self._parse_humidity(response)
+                        elif cmd_name == "OT":
+                            self._state["outdoor_temperature"] = self._parse_temperature(response)
+                        elif cmd_name == "FLTALM":
+                            self._state["filter_alarm"] = (response == "ON")
+                        elif cmd_name == "WPALM":
+                            self._state["water_panel_alarm"] = (response == "ON")
+                        elif cmd_name == "SYSALM":
+                            self._state["system_alarm"] = (response == "ON")
+                        elif cmd_name == "DEHALM":
+                            self._state["dehumidifier_alarm"] = (response == "ON")
+                        elif cmd_name == "ERROR":
+                            self._state["error_status"] = response
+                except Exception as ex:
+                    # Just log debug for optional commands
+                    _LOGGER.debug("Error querying %s for device %s: %s", cmd, self.address, ex)
+                    
+            return success
         except Exception as err:
             _LOGGER.error("Error updating thermostat %s: %s", self.address, err)
-            self.available = False
             return False
 
     def _find_matching_response(self, responses: List[str], command: str) -> Optional[str]:
@@ -377,13 +466,32 @@ class AprilaireDevice:
                 
         return None
 
-    async def _send_command_with_retry(self, command: str, retries: int = 2, timeout: float = 3.0) -> Optional[str]:
-        """Send command with retry mechanism."""
+    async def _send_command_with_retry(
+        self, 
+        command: str, 
+        retries: int = 2, 
+        timeout: float = 3.0,
+        allow_skip: bool = False
+    ) -> Optional[str]:
+        """Send command with retry mechanism.
+        
+        Args:
+            command: Command to send
+            retries: Number of retries on failure
+            timeout: Command timeout in seconds
+            allow_skip: Whether to allow skipping this command on persistent failure
+            
+        Returns:
+            Response string or None if command failed
+            
+        Raises:
+            Exception: If command fails and allow_skip is False
+        """
         for attempt in range(retries + 1):
             if attempt > 0:
                 _LOGGER.debug("Retry %d for command %s on device %s", attempt, command, self.address)
                 await asyncio.sleep(1.0)  # Longer delay for retries
-                
+                    
             try:
                 # Use the improved command method from connection if available
                 if hasattr(self.protocol._connection, "async_send_command_with_response"):
@@ -395,13 +503,18 @@ class AprilaireDevice:
                     await asyncio.sleep(2.0)  # Wait for response
                     responses = self.protocol._connection.get_received_messages()
                     response = self._find_matching_response(responses, command)
-                    
+                        
                 if response:
                     return response
             except Exception as err:
                 _LOGGER.error("Error sending command %s (attempt %d): %s", command, attempt, err)
-                
-        return None
+                    
+        # If we get here, all attempts failed
+        if allow_skip:
+            _LOGGER.debug("Skipping command %s after %d failed attempts", command, retries + 1)
+            return None
+        else:
+            raise Exception(f"Command {command} failed after {retries + 1} attempts")
 
     async def async_send_command(self, command: str, value: Any = None) -> Any:
         """Send a command to the thermostat.
@@ -770,8 +883,12 @@ class AprilaireDevice:
             controller_type: The response from the CT command
         """
         try:
-            ct = int(controller_type)
-            self.capabilities["controller_type"] = ct
+            # Extract the value part (after "CT=")
+            if "CT=" in controller_type:
+                value = controller_type.split("CT=")[1].strip()
+                # Now convert just the extracted value to int
+                ct = int(value)
+                self.capabilities["controller_type"] = ct
         except Exception as err:
             _LOGGER.error("Error parsing controller type for thermostat %s: %s", self.address, err)
 
@@ -811,7 +928,7 @@ class AprilaireDevice:
             self.capabilities["support_modules"] = support_modules
         except Exception as err:
             _LOGGER.error("Error parsing support modules for thermostat %s: %s", self.address, err)
-
+        
     def _parse_temperature(self, temp_str: str) -> Optional[float]:
         """Parse temperature value from response.
         
@@ -819,9 +936,13 @@ class AprilaireDevice:
             temp_str: The temperature string from a response
             
         Returns:
-            Parsed temperature as a float, or None if parsing failed
+            Parsed temperature as a float, or None if parsing failed or placeholder
         """
         try:
+            # Check for placeholder values
+            if temp_str in ["--F", "--C", "--"]:
+                return None
+                
             # Expected format: "72F" or "22C"
             if temp_str.endswith("F") or temp_str.endswith("C"):
                 return float(temp_str[:-1])
@@ -838,9 +959,13 @@ class AprilaireDevice:
             humidity_str: The humidity string from a response
             
         Returns:
-            Parsed humidity as an integer, or None if parsing failed
+            Parsed humidity as an integer, or None if parsing failed or placeholder
         """
         try:
+            # Check for placeholder values
+            if humidity_str in ["--%", "--"]:
+                return None
+                
             # Expected format: "45%" or just "45"
             if humidity_str.endswith("%"):
                 return int(humidity_str[:-1])

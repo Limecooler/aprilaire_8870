@@ -24,8 +24,75 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     hass.data.setdefault(DOMAIN, {})
     return True
 
+async def async_initialize_devices_background(
+    hass: HomeAssistant, 
+    entry: ConfigEntry, 
+    coordinator, 
+    device_manager, 
+    discovered_addresses
+) -> None:
+    """Initialize devices in the background after config is complete."""
+    _LOGGER.debug("Starting background initialization of %d thermostats", len(discovered_addresses))
+    
+    # Dictionary to store initialized devices
+    initialized_devices = {}
+    
+    # Setup devices with proper spacing between initializations
+    for address in discovered_addresses:
+        try:
+            # Add delay between device initializations to prevent overwhelming the network
+            await asyncio.sleep(1.0)
+            
+            _LOGGER.debug("Initializing thermostat %s in background", address)
+            device = await device_manager.async_setup_device(address)
+            if device:
+                initialized_devices[address] = device
+                # Update the data store as each device is initialized
+                hass.data[DOMAIN][entry.entry_id]["devices"][address] = device
+                
+                # Immediately trigger a coordinator update for this device
+                # to refresh entity states for just this device
+                coordinator.async_update_listeners()
+        except Exception as dev_ex:
+            _LOGGER.error("Error initializing device %s in background: %s", address, dev_ex)
+    
+    # Update the coordinator with all discovered devices
+    coordinator.devices = initialized_devices
+    
+    # Perform initial data update for all devices
+    await coordinator.async_refresh()
+    
+    _LOGGER.info("Background initialization complete for %d thermostats", len(initialized_devices))
+    
+    # After all devices are initialized, set up COS functionality in background
+    hass.async_create_task(async_setup_cos_background(hass, entry, initialized_devices))
+
+async def async_setup_cos_background(
+    hass: HomeAssistant, 
+    entry: ConfigEntry,
+    devices
+) -> None:
+    """Set up COS functionality in the background."""
+    _LOGGER.debug("Setting up COS functionality in background for %d thermostats", len(devices))
+    
+    for address, device in devices.items():
+        try:
+            # Add delay between devices to prevent overwhelming the network
+            await asyncio.sleep(2.0)
+            
+            # Enable COS with retry and handling for unsupported flags
+            await device.async_enable_cos()
+            
+            # Small delay after COS setup
+            await asyncio.sleep(0.5)
+        except Exception as cos_ex:
+            _LOGGER.warning("Error setting up COS for device %s: %s", address, cos_ex)
+            # Continue with other devices even if one fails
+    
+    _LOGGER.info("COS setup complete for all thermostats")
+
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
-    """Set up Aprilaire 8870 Thermostat from a config entry with improved error handling."""
+    """Set up Aprilaire 8870 Thermostat from a config entry with deferred initialization."""
     _LOGGER.debug("Setting up Aprilaire 8870 integration with entry: %s", entry.entry_id)
     
     hass.data.setdefault(DOMAIN, {})
@@ -65,20 +132,30 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 await connection.async_disconnect()
             raise ConfigEntryNotReady("Failed to connect to Aprilaire network")
         
-        # Create protocol instance with connection
-        protocol = AprilaireProtocol(connection)    
-
         # Start reading from the connection
         await connection.async_start_reading()
         
         # Add delay after starting read loop
         await asyncio.sleep(1.0)
         
-        # Create update coordinator first
+        # Get discovered thermostats from entry config
+        discovered_addresses = entry.data.get("discovered_thermostats", [])
+        
+        if not discovered_addresses:
+            _LOGGER.warning("No Aprilaire 8870 thermostats in configuration")
+            # Properly close the connection
+            if connection:
+                await connection.async_disconnect()
+            raise ConfigEntryNotReady("No thermostats in configuration")
+        
+        # Create protocol instance with connection
+        protocol = AprilaireProtocol(connection)
+        
+        # Create update coordinator with minimal initial state
         coordinator = AprilaireDataUpdateCoordinator(
             hass,
             connection=connection,
-            devices={},  # Will be populated later
+            devices={},  # Will be populated during initialization
             device_manager=None  # Will be set after device_manager is created
         )
         
@@ -88,68 +165,19 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         # Set the device_manager in the coordinator
         coordinator.device_manager = device_manager
         
-        # Discover devices on the network with retry
-        discovered_addresses = []
-        for attempt in range(3):
-            try:
-                discovered = await device_manager.async_discover_devices(connection)
-                if discovered:
-                    discovered_addresses = discovered
-                    break
-                _LOGGER.warning("Discovery attempt %d returned no devices, retrying...", attempt + 1)
-                await asyncio.sleep(2)
-            except Exception as disc_ex:
-                _LOGGER.warning("Discovery error on attempt %d: %s", attempt + 1, disc_ex)
-                await asyncio.sleep(2)
-        
-        if not discovered_addresses:
-            _LOGGER.warning("No Aprilaire 8870 thermostats discovered on the network")
-            # Properly close the connection
-            if connection:
-                await connection.async_disconnect()
-            raise ConfigEntryNotReady("No thermostats discovered")
-        
-        # Setup devices with proper spacing between initializations
-        discovered_devices = {}
-        for address in discovered_addresses:
-            try:
-                # Add delay between device initializations
-                await asyncio.sleep(1.0)
-                
-                device = await device_manager.async_setup_device(address)
-                if device:
-                    discovered_devices[address] = device
-            except Exception as dev_ex:
-                _LOGGER.error("Error initializing device %s: %s", address, dev_ex)
-        
-        if not discovered_devices:
-            _LOGGER.warning("Failed to initialize any thermostats")
-            # Properly close the connection
-            if connection:
-                await connection.async_disconnect()
-            raise ConfigEntryNotReady("Failed to initialize thermostats")
-            
-        # Update the coordinator with the discovered devices
-        coordinator.devices = discovered_devices
-        
-        # Add delay before initial data refresh
-        await asyncio.sleep(1.0)
-        
-        # Perform initial data update
-        await coordinator.async_refresh()
-        
-        # Store everything in hass data
+        # Store initialized components in hass data
         hass.data[DOMAIN][entry.entry_id] = {
             "coordinator": coordinator,
             "connection": connection,
             "device_manager": device_manager,
-            "devices": discovered_devices,
+            "devices": {},  # Will be populated during background setup
+            "discovered_addresses": discovered_addresses,
         }
         
         # Set up services
         await async_setup_services(hass)
         
-        # Set up platforms
+        # Set up platforms first with minimal info
         hass_platforms = list(PLATFORMS)  # Create a copy of the list
         for platform in hass_platforms:
             try:
@@ -160,6 +188,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         
         # Register update listener to track config entry changes
         entry.async_on_unload(entry.add_update_listener(async_update_options))
+        
+        # Schedule background task for detailed device initialization
+        hass.async_create_task(
+            async_initialize_devices_background(hass, entry, coordinator, device_manager, discovered_addresses)
+        )
         
         return True
         
