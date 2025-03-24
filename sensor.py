@@ -37,38 +37,39 @@ async def async_setup_entry(
     async_add_entities: AddEntitiesCallback,
 ) -> None:
     """Set up Aprilaire sensors based on config_entry."""
-    coordinator = hass.data[DOMAIN][entry.entry_id]
+    coordinator = hass.data[DOMAIN][entry.entry_id]["coordinator"]
+    devices = hass.data[DOMAIN][entry.entry_id]["devices"]
     
     entities = []
-    for device_id, device in coordinator.devices.items():
+    for device_id, device in devices.items():
         # Always add temperature sensor
-        entities.append(AprilaireTemperatureSensor(coordinator, device_id))
+        entities.append(AprilaireTemperatureSensor(coordinator, device))
         
         # Add humidity sensor if capability exists
-        if device.get("has_humidity_sensor", False):
-            entities.append(AprilaireHumiditySensor(coordinator, device_id))
+        if device.capabilities.get("has_humidity_sensor", False):
+            entities.append(AprilaireHumiditySensor(coordinator, device))
         
         # Add outdoor temperature sensor if available
-        if device.get("has_outdoor_temp_sensor", False):
-            entities.append(AprilaireOutdoorTemperatureSensor(coordinator, device_id))
+        if device.capabilities.get("has_outdoor_temp_sensor", False):
+            entities.append(AprilaireOutdoorTemperatureSensor(coordinator, device))
         
         # Add outdoor humidity sensor if available
-        if device.get("has_outdoor_humidity_sensor", False):
-            entities.append(AprilaireOutdoorHumiditySensor(coordinator, device_id))
+        if device.capabilities.get("has_outdoor_humidity_sensor", False):
+            entities.append(AprilaireOutdoorHumiditySensor(coordinator, device))
         
         # Add remote temperature sensors if available
-        remote_sensors = device.get("remote_sensors", {})
+        remote_sensors = device.capabilities.get("support_modules", {})
         for sensor_id, sensor_info in remote_sensors.items():
-            entities.append(AprilaireRemoteSensor(
-                coordinator, 
-                device_id, 
-                sensor_id, 
-                sensor_info.get("name", f"Remote Sensor {sensor_id}"),
-                sensor_info.get("type", "temperature")
-            ))
+            if isinstance(sensor_info, dict):  # Ensure it's a dictionary before accessing
+                entities.append(AprilaireRemoteSensor(
+                    coordinator, 
+                    device, 
+                    sensor_id, 
+                    sensor_info.get("name", f"Remote Sensor {sensor_id}"),
+                    sensor_info.get("type", "temperature")
+                ))
     
     async_add_entities(entities, True)
-
 
 class AprilaireSensor(CoordinatorEntity, SensorEntity):
     """Base class for Aprilaire sensors."""

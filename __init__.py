@@ -178,14 +178,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         await async_setup_services(hass)
         
         # Set up platforms first with minimal info
-        hass_platforms = list(PLATFORMS)  # Create a copy of the list
-        for platform in hass_platforms:
-            try:
-                await hass.config_entries.async_forward_entry_setup(entry, platform)
-            except Exception as platform_ex:
-                _LOGGER.error("Error setting up platform %s: %s", platform, platform_ex)
-                # Continue with other platforms even if one fails
-        
+        try:
+            await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+        except Exception as ex:
+            _LOGGER.error("Error setting up platforms: %s", ex)
+
         # Register update listener to track config entry changes
         entry.async_on_unload(entry.add_update_listener(async_update_options))
         

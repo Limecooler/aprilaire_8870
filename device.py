@@ -554,7 +554,9 @@ class AprilaireDevice:
         try:
             # Set Command Response (CR) to NORMAL to enable COS
             cr_result = await self.protocol.execute_assignment_command(self.address, CMD_CR, "NORMAL")
-            if not cr_result:
+            
+            # Modified validation: Check if response contains "CR=NORMAL" instead of exact matching
+            if not cr_result or "CR=NORMAL" not in cr_result:
                 _LOGGER.error("Failed to set Command Response to NORMAL on thermostat %s", self.address)
                 return False
             
@@ -562,7 +564,8 @@ class AprilaireDevice:
             success = True
             for flag in flags:
                 result = await self.protocol.execute_assignment_command(self.address, flag, "ON")
-                if not result:
+                # Modified validation: Check if response contains "{flag}=ON" instead of exact matching
+                if not result or f"{flag}=ON" not in result:
                     _LOGGER.error("Failed to enable COS flag %s on thermostat %s", flag, self.address)
                     success = False
                 else:

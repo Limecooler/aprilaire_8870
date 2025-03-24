@@ -347,87 +347,40 @@ class AprilaireProtocol:
                 _LOGGER.error("Error executing query command %s for device %s: %s", 
                             command, device_id, ex)
                 return None
-    
+
     async def execute_assignment_command(
         self, device_id: int, command: str, value: str, timeout: Optional[float] = None
     ) -> Optional[str]:
-        """Execute an assignment command with improved response handling and retry logic."""
-        if not self._connection:
+        """Execute an assignment command and return the response.
+
+        Args:
+            device_id: The device to send the command to
+            command: The command to execute
+            value: The value to assign
+            timeout: Optional timeout override
+
+        Returns:
+            The command response value or None if failed
+        """
+        if not hasattr(self, "_connection") or self._connection is None:
             _LOGGER.error("No connection available for executing command")
             return None
-            
-        # Use lock to prevent concurrent commands
-        async with self._command_lock:
-            try:
-                # Use improved command method if available
-                if hasattr(self._connection, "async_send_command_with_response"):
-                    formatted_command = f"SN{device_id} {command}={value}"
-                    response = await self._connection.async_send_command_with_response(
-                        formatted_command,
-                        timeout=timeout or COMMAND_TIMEOUT
-                    )
-                    
-                    if response:
-                        # Extract value from response
-                        if "=" in response:
-                            parts = response.split("=", 1)
-                            if len(parts) > 1:
-                                return parts[1].strip()
-                        return response.strip()
-                else:
-                    # Fallback to standard method
-                    formatted_command = f"SN{device_id} {command}={value}"
-                    
-                    # Clear any previous received messages
-                    if hasattr(self._connection, 'get_received_messages'):
-                        self._connection.get_received_messages()
-                    
-                    # Send the command
-                    _LOGGER.debug("Sending command: %s", formatted_command)
-                    await self._connection.async_send_command(formatted_command)
-                    
-                    # Wait for response - longer timeout for reliability
-                    await asyncio.sleep(timeout or COMMAND_TIMEOUT)
-                    
-                    # Get received messages
-                    if hasattr(self._connection, 'get_received_messages'):
-                        responses = self._connection.get_received_messages()
-                        
-                        # Filter responses for this device and command
-                        device_prefix = f"SN{device_id}"
-                        matching_responses = []
-                        
-                        for resp in responses:
-                            if resp.startswith(device_prefix) and command in resp:
-                                matching_responses.append(resp)
-                        
-                        if matching_responses:
-                            response = matching_responses[0]
-                            
-                            # Extract value from response
-                            if "=" in response:
-                                parts = response.split("=", 1)
-                                if len(parts) > 1:
-                                    return parts[1].strip()
-                            return response.strip()
-                        
-                        # If no exact match, try more lenient matching
-                        for resp in responses:
-                            if resp.startswith(device_prefix):
-                                if "=" in resp:
-                                    parts = resp.split("=", 1)
-                                    if len(parts) > 1:
-                                        return parts[1].strip()
-                                return resp.strip()
-                
-                # No response found
-                return None
-                
-            except Exception as ex:
-                _LOGGER.error("Error executing assignment command %s=%s for device %s: %s", 
-                            command, value, device_id, ex)
-                return None
-    
+
+        try:
+            # Create formatted command
+            formatted_command = f"SN{device_id} {command}={value}"
+
+            # Send the command and get the response
+            response = await self._connection.async_send_command(formatted_command)
+
+            # Simply return the full response - validation will be done at a higher level
+            return response
+
+        except Exception as ex:
+            _LOGGER.error("Error executing assignment command %s=%s for device %s: %s",
+                         command, value, device_id, ex)
+            return None
+
     async def execute_query_command(
         self, device_id: int, command: str, timeout: Optional[float] = None
     ) -> Optional[str]:
