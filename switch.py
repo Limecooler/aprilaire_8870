@@ -88,9 +88,23 @@ class AprilaireSwitch(CoordinatorEntity, SwitchEntity):
         """Initialize the switch."""
         super().__init__(coordinator)
         self._device = device
-        self._device_id = str(device.address) if device else ""
-        self._attr_name = f"{device.name if device else f'Aprilaire {self._device_id}'} {name_suffix}"
-        self._attr_unique_id = f"{device.unique_id if device else f'{DOMAIN}_{self._device_id}'}__{unique_id_suffix}"
+        # Safely get device_id
+        if device is not None and hasattr(device, "address"):
+            self._device_id = str(device.address)
+        else:
+            # Generate a fallback ID if device doesn't have an address
+            self._device_id = f"unknown_{id(self)}"
+        
+        # Safely build name and unique_id
+        if device is not None:
+            device_name = getattr(device, "name", f"Aprilaire {self._device_id}")
+            device_unique_id = getattr(device, "unique_id", f"{DOMAIN}_{self._device_id}")
+        else:
+            device_name = f"Aprilaire {self._device_id}"
+            device_unique_id = f"{DOMAIN}_{self._device_id}"
+            
+        self._attr_name = f"{device_name} {name_suffix}"
+        self._attr_unique_id = f"{device_unique_id}_{unique_id_suffix}"
         self._attr_entity_category = entity_category
         self._attr_icon = icon
         self._attr_has_entity_name = True
@@ -98,8 +112,8 @@ class AprilaireSwitch(CoordinatorEntity, SwitchEntity):
     @property
     def device_info(self) -> Dict[str, Any]:
         """Return device info for this device."""
-        # Add null check to avoid None errors
-        if not self._device:
+        # If device is None, return basic info
+        if self._device is None:
             return {
                 "identifiers": {(DOMAIN, self._device_id)},
                 "name": f"Aprilaire {self._device_id}",
@@ -107,9 +121,15 @@ class AprilaireSwitch(CoordinatorEntity, SwitchEntity):
                 "model": "8870",
             }
         
-        # Return the device info if device is available
-        return self._device.device_info
-        
+        # Return device info for a valid device
+        return {
+            "identifiers": {(DOMAIN, self._device_id)},
+            "name": self._device.name if hasattr(self._device, "name") else f"Aprilaire {self._device_id}",
+            "manufacturer": "Aprilaire",
+            "model": getattr(self._device, "model", "8870"),
+            "sw_version": getattr(self._device, "firmware_version", None),
+        }
+
     @property
     def available(self) -> bool:
         """Return if entity is available."""
@@ -223,52 +243,19 @@ class AprilaireNetworkOverrideSwitch(AprilaireSwitch):
     def is_on(self) -> bool:
         """Return true if network override is active."""
         device_data = self.coordinator.data.get(self._device_id, {})
-        return device_data.get("hold", "OFF") == "ON"
+        return device_data.get("hold_status", "OFF") == "ON"
 
     async def _async_turn_on_impl(self, **kwargs: Any) -> None:
         """Turn on network override (set HOLD to ON)."""
-        await self._device.async_set_hold(True)
-        # Coordinator will be updated when the COS message is received
-        # or during the next polling cycle
+        if hasattr(self._device, "async_set_hold"):
+            await self._device.async_set_hold(True)
+        # Coordinator will be updated when the COS message is received or during polling
     
     async def _async_turn_off_impl(self, **kwargs: Any) -> None:
         """Turn off network override (set HOLD to OFF)."""
-        await self._device.async_set_hold(False)
-        # Coordinator will be updated when the COS message is received
-        # or during the next polling cycle
-    """Switch to control network override (HOLD) functionality."""
-
-    def __init__(self, coordinator, device) -> None:
-        """Initialize the network override switch."""
-        super().__init__(
-            coordinator=coordinator,
-            device=device,
-            name_suffix="Network Override",
-            unique_id_suffix="network_override",
-            entity_category=EntityCategory.CONFIG,
-            icon="mdi:network-off",
-        )
-
-    @property
-    def is_on(self) -> bool:
-        """Return true if network override is active."""
-        if not self.coordinator.data.get(self._device.device_id):
-            return False
-        
-        return self.coordinator.data[self._device.device_id].get("hold", "OFF") == "ON"
-
-    async def async_turn_on(self, **kwargs: Any) -> None:
-        """Turn on network override (set HOLD to ON)."""
-        await self._device.async_set_network_override(True)
-        # Coordinator will be updated when the COS message is received
-        # or during the next polling cycle
-    
-    async def async_turn_off(self, **kwargs: Any) -> None:
-        """Turn off network override (set HOLD to OFF)."""
-        await self._device.async_set_network_override(False)
-        # Coordinator will be updated when the COS message is received
-        # or during the next polling cycle
-
+        if hasattr(self._device, "async_set_hold"):
+            await self._device.async_set_hold(False)
+        # Coordinator will be updated when the COS message is received or during polling
 
 class AprilaireBacklightSwitch(AprilaireSwitch):
     """Switch to control thermostat constant backlight."""
@@ -292,41 +279,12 @@ class AprilaireBacklightSwitch(AprilaireSwitch):
 
     async def _async_turn_on_impl(self, **kwargs: Any) -> None:
         """Turn on constant backlight."""
-        await self._device.async_set_constant_backlight(True)
+        if hasattr(self._device, "async_set_constant_backlight"):
+            await self._device.async_set_constant_backlight(True)
         # Coordinator will be updated during the next polling cycle
     
     async def _async_turn_off_impl(self, **kwargs: Any) -> None:
         """Turn off constant backlight."""
-        await self._device.async_set_constant_backlight(False)
+        if hasattr(self._device, "async_set_constant_backlight"):
+            await self._device.async_set_constant_backlight(False)
         # Coordinator will be updated during the next polling cycle
-    """Switch to control thermostat constant backlight."""
-
-    def __init__(self, coordinator, device) -> None:
-        """Initialize the backlight switch."""
-        super().__init__(
-            coordinator=coordinator,
-            device=device,
-            name_suffix="Constant Backlight",
-            unique_id_suffix="constant_backlight",
-            entity_category=EntityCategory.CONFIG,
-            icon="mdi:lightbulb",
-        )
-
-    @property
-    def is_on(self) -> bool:
-        """Return true if constant backlight is enabled."""
-        if not self.coordinator.data.get(self._device.device_id):
-            return False
-        
-        return self.coordinator.data[self._device.device_id].get("constant_backlight", "OFF") == "ON"
-
-    async def async_turn_on(self, **kwargs: Any) -> None:
-        """Turn on constant backlight."""
-        await self._device.async_set_constant_backlight(True)
-        # Coordinator will be updated during the next polling cycle
-    
-    async def async_turn_off(self, **kwargs: Any) -> None:
-        """Turn off constant backlight."""
-        await self._device.async_set_constant_backlight(False)
-        # Coordinator will be updated during the next polling cycle
-
