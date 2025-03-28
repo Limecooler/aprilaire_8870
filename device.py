@@ -787,6 +787,11 @@ class AprilaireDevice:
         Returns:
             A dictionary containing the current state
         """
+        # Make sure we're always returning a valid dictionary, 
+        # never None or something that's not a dictionary
+        if not hasattr(self, "_state") or self._state is None:
+            return {}
+        
         return self._state.copy()
 
     def get_capabilities(self) -> Dict[str, Any]:

@@ -43,6 +43,8 @@ async def async_initialize_devices_background(
         device_id = str(address)
         if coordinator.data is None:
             coordinator.data = {}
+        
+        # Ensure each device_id has a dictionary, not None
         if device_id not in coordinator.data:
             coordinator.data[device_id] = {
                 "available": False,
@@ -70,11 +72,15 @@ async def async_initialize_devices_background(
                     # Ensure coordinator data is initialized
                     if coordinator.data is None:
                         coordinator.data = {}
+                    
+                    # Make sure the device_id exists in coordinator.data with a dictionary
                     if device_id not in coordinator.data:
                         coordinator.data[device_id] = {}
                     
-                    # Merge device state with existing data
-                    coordinator.data[device_id].update(device_state)
+                    # Now it's safe to update
+                    if device_state:  # Also check if device_state is not None
+                        coordinator.data[device_id].update(device_state)
+                    
                     # Ensure device availability is set
                     coordinator.data[device_id]["available"] = device.available
                     
@@ -82,6 +88,7 @@ async def async_initialize_devices_background(
                     coordinator.async_update_listeners()
         except Exception as dev_ex:
             _LOGGER.error("Error initializing device %s in background: %s", address, dev_ex)
+            # Continue with other devices even if one fails
     
     # Update the coordinator with all discovered devices
     coordinator.devices = initialized_devices
@@ -93,7 +100,6 @@ async def async_initialize_devices_background(
     
     # After all devices are initialized, set up COS functionality in background
     hass.async_create_task(async_setup_cos_background(hass, entry, initialized_devices))
-
 
 async def async_setup_cos_background(
     hass: HomeAssistant, 
