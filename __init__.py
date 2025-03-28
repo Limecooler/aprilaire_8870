@@ -37,6 +37,16 @@ async def async_initialize_devices_background(
     # Dictionary to store initialized devices
     initialized_devices = {}
     
+    # Pre-initialize empty data structures for all discovered devices
+    # This ensures coordinator data exists before any device tries to access it
+    for address in discovered_addresses:
+        device_id = str(address)
+        if device_id not in coordinator.data:
+            coordinator.data[device_id] = {
+                "available": False,
+                "from_cache": False,
+            }
+    
     # Setup devices with proper spacing between initializations
     for address in discovered_addresses:
         try:
@@ -49,6 +59,14 @@ async def async_initialize_devices_background(
                 initialized_devices[address] = device
                 # Update the data store as each device is initialized
                 hass.data[DOMAIN][entry.entry_id]["devices"][address] = device
+                
+                # Update coordinator data structure with device state
+                device_state = device.get_state() if hasattr(device, "get_state") else {}
+                device_id = str(address)
+                
+                # Ensure device state has minimum required fields
+                device_state["available"] = device.available
+                coordinator.data[device_id] = device_state
                 
                 # Immediately trigger a coordinator update for this device
                 # to refresh entity states for just this device

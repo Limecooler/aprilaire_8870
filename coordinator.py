@@ -48,23 +48,14 @@ class AprilaireDataUpdateCoordinator(DataUpdateCoordinator):
         enable_cos: bool = True,
         cos_flags: Set[str] = None,
     ) -> None:
-        """Initialize the coordinator.
-        
-        Args:
-            hass: Home Assistant instance
-            connection: Connection to the Aprilaire network
-            devices: Dictionary of initialized devices
-            device_manager: Device manager instance
-            update_interval: Normal polling interval when COS is working
-            fallback_scan_interval: Faster polling when COS is not working
-            cos_verification_interval: How often to verify COS functionality
-            enable_cos: Whether to enable Change of State functionality
-            cos_flags: Which COS flags to enable on thermostats
-        """
+        """Initialize the coordinator."""
         self.connection = connection
-        self.devices = devices
+        self.devices = devices or {}  # Ensure devices is always a dictionary
         self.device_manager = device_manager
+        # Initialize empty data structure
         self._device_data = {}
+        # Initialize coordinator data with empty dictionary
+        self.data = {}
         self._cos_enabled = enable_cos
         self._cos_flags = cos_flags or {
             COS_FLAG_HVAC_RELAYS,
@@ -99,7 +90,10 @@ class AprilaireDataUpdateCoordinator(DataUpdateCoordinator):
 
         # Initialize device data
         for device_id, device in devices.items():
-            self._device_data[device_id] = {"available": device.available}
+            device_id_str = str(device_id)
+            self._device_data[device_id_str] = {"available": device.available}
+            # Also initialize in the main data structure
+            self.data[device_id_str] = {"available": device.available}
 
         # Load stored state
         self.hass.async_create_task(self._async_load_stored_state())

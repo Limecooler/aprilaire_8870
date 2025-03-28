@@ -134,14 +134,18 @@ class AprilaireClimate(CoordinatorEntity, ClimateEntity):
     def available(self) -> bool:
         """Return if entity is available."""
         # Check if we have data for this device
-        device_data = self.coordinator.data.get(self._device_id)
+        device_data = None
+        if self.coordinator and hasattr(self.coordinator, "data"):
+            device_data = self.coordinator.data.get(self._device_id, {})
+        
+        # If no data found, the entity is not available
         if not device_data:
             return False
-            
+        
         # If data is from cache but device is not available, still return True
         if device_data.get("from_cache") and not device_data.get("available", False):
             return True
-            
+        
         # Otherwise, follow standard availability logic
         return self.coordinator.last_update_success and device_data.get("available", False)
 
