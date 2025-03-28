@@ -159,7 +159,11 @@ class AprilaireTemperatureSensor(AprilaireSensor):
     @property
     def native_value(self) -> Optional[float]:
         """Return the current temperature."""
-        return self._device.get("current_temperature")
+        if not self.coordinator.data:
+            return None
+        
+        device_data = self.coordinator.data.get(self._device_id, {})
+        return device_data.get("temperature")
 
 
 class AprilaireHumiditySensor(AprilaireSensor):
@@ -180,7 +184,11 @@ class AprilaireHumiditySensor(AprilaireSensor):
     @property
     def native_value(self) -> Optional[int]:
         """Return the current humidity."""
-        return self._device.get("current_humidity")
+        if not self.coordinator.data:
+            return None
+        
+        device_data = self.coordinator.data.get(self._device_id, {})
+        return device_data.get("humidity")
 
 
 class AprilaireOutdoorTemperatureSensor(AprilaireSensor):
@@ -201,7 +209,11 @@ class AprilaireOutdoorTemperatureSensor(AprilaireSensor):
     @property
     def native_value(self) -> Optional[float]:
         """Return the outdoor temperature."""
-        return self._device.get("outdoor_temperature")
+        if not self.coordinator.data:
+            return None
+        
+        device_data = self.coordinator.data.get(self._device_id, {})
+        return device_data.get("outdoor_temperature")
 
 
 class AprilaireOutdoorHumiditySensor(AprilaireSensor):
@@ -222,7 +234,11 @@ class AprilaireOutdoorHumiditySensor(AprilaireSensor):
     @property
     def native_value(self) -> Optional[int]:
         """Return the outdoor humidity."""
-        return self._device.get("outdoor_humidity")
+        if not self.coordinator.data:
+            return None
+        
+        device_data = self.coordinator.data.get(self._device_id, {})
+        return device_data.get("outdoor_humidity")
 
 
 class AprilaireRemoteSensor(AprilaireSensor):
@@ -262,14 +278,22 @@ class AprilaireRemoteSensor(AprilaireSensor):
     @property
     def native_value(self) -> Optional[float]:
         """Return the remote sensor value."""
-        remote_sensors = self._device.get("remote_sensors", {})
+        if not self.coordinator.data:
+            return None
+            
+        device_data = self.coordinator.data.get(self._device_id, {})
+        remote_sensors = device_data.get("remote_sensors", {})
         sensor_data = remote_sensors.get(self._sensor_id, {})
         return sensor_data.get("value")
     
     @property
     def extra_state_attributes(self) -> Dict[str, Any]:
         """Return additional attributes about the remote sensor."""
-        remote_sensors = self._device.get("remote_sensors", {})
+        if not self.coordinator.data:
+            return {}
+            
+        device_data = self.coordinator.data.get(self._device_id, {})
+        remote_sensors = device_data.get("remote_sensors", {})
         sensor_data = remote_sensors.get(self._sensor_id, {})
         
         attrs = {}
@@ -283,4 +307,3 @@ class AprilaireRemoteSensor(AprilaireSensor):
             attrs["is_control"] = is_control
             
         return attrs
-
