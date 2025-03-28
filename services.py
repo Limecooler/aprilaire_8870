@@ -1,7 +1,7 @@
 """Services for the Aprilaire 8870 thermostat integration."""
 import logging
 import voluptuous as vol
-import traceback
+import traceback  # Add missing import
 
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import config_validation as cv
@@ -37,11 +37,95 @@ from .const import (
     MESSAGE_TYPE_PERMANENT_2,
     MESSAGE_TYPE_PERMANENT_3,
     MESSAGE_TYPE_PERMANENT_4,
+    COS_FLAG_HVAC_RELAYS,
+    COS_FLAG_TEMPERATURE,
+    COS_FLAG_SETPOINTS,
+    COS_FLAG_MODE,
+    COS_FLAG_FAN,
+    COS_FLAG_ALARMS,
+    COS_FLAG_ERRORS,
 )
 
 _LOGGER = logging.getLogger(__name__)
 
-# Schema definitions for service calls remain the same
+# Define the schema for the set_text_message service
+SET_TEXT_MESSAGE_SCHEMA = vol.Schema(
+    {
+        vol.Required(ATTR_ENTITY_ID): cv.entity_id,
+        vol.Required(ATTR_MESSAGE): cv.string,
+        vol.Required(ATTR_MESSAGE_TYPE): vol.In(
+            [
+                MESSAGE_TYPE_TEMPORARY,
+                MESSAGE_TYPE_PERMANENT_1,
+                MESSAGE_TYPE_PERMANENT_2,
+                MESSAGE_TYPE_PERMANENT_3,
+                MESSAGE_TYPE_PERMANENT_4,
+            ]
+        ),
+    }
+)
+
+# Define the schema for the set_backlight service
+SET_BACKLIGHT_SCHEMA = vol.Schema(
+    {
+        vol.Required(ATTR_ENTITY_ID): cv.entity_id,
+        vol.Optional(ATTR_STATE): cv.boolean,
+        vol.Optional(ATTR_DURATION): vol.All(
+            vol.Coerce(int), vol.Range(min=0, max=255)
+        ),
+    }
+)
+
+# Define the schema for the reset_filter service
+RESET_FILTER_SCHEMA = vol.Schema(
+    {
+        vol.Required(ATTR_ENTITY_ID): cv.entity_id,
+    }
+)
+
+# Define the schema for the set_lockout service
+SET_LOCKOUT_SCHEMA = vol.Schema(
+    {
+        vol.Required(ATTR_ENTITY_ID): cv.entity_id,
+        vol.Optional(ATTR_FAN_LOCKOUT): vol.All(
+            vol.Coerce(int), vol.Range(min=0, max=2)
+        ),
+        vol.Optional(ATTR_MODE_LOCKOUT): vol.All(
+            vol.Coerce(int), vol.Range(min=0, max=2)
+        ),
+        vol.Optional(ATTR_SETPOINT_LOCKOUT): vol.All(
+            vol.Coerce(int), vol.Range(min=0, max=4)
+        ),
+        vol.Optional(ATTR_NETWORK_LOCKOUT): vol.All(
+            vol.Coerce(int), vol.Range(min=0, max=1)
+        ),
+        vol.Optional(ATTR_LOCKOUT_TIME): vol.All(
+            vol.Coerce(int), vol.Range(min=0, max=255)
+        ),
+        vol.Optional(ATTR_LOCKOUT_LIMIT): vol.All(
+            vol.Coerce(int), vol.Range(min=0, max=20)
+        ),
+    }
+)
+
+# Define the schema for the configure_cos service
+CONFIGURE_COS_SCHEMA = vol.Schema(
+    {
+        vol.Required(ATTR_ENTITY_ID): cv.entity_id,
+        vol.Required(ATTR_COS_FLAGS): vol.All(
+            cv.ensure_list, 
+            [vol.In([
+                COS_FLAG_HVAC_RELAYS,
+                COS_FLAG_TEMPERATURE,
+                COS_FLAG_SETPOINTS,
+                COS_FLAG_MODE,
+                COS_FLAG_FAN,
+                COS_FLAG_ALARMS,
+                COS_FLAG_ERRORS,
+            ])]
+        ),
+    }
+)
 
 async def async_setup_services(hass: HomeAssistant) -> None:
     """Set up Aprilaire 8870 services."""

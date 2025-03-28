@@ -1,6 +1,7 @@
 """The Aprilaire 8870 Thermostat integration."""
 import asyncio
 import logging
+import traceback
 from typing import Any
 
 import voluptuous as vol
