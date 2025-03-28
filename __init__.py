@@ -265,8 +265,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             await async_setup_services(hass)
             _LOGGER.debug("Successfully set up integration services")
         except Exception as service_ex:
-            _LOGGER.exception("Error setting up services: %s", service_ex)
-            # Continue despite service setup error, as this might not be critical
+            _LOGGER.error("Error setting up services: %s", service_ex)
+            _LOGGER.error("Traceback: %s", traceback.format_exc())
+            # Make this a fatal error since service setup is critical
+            raise ConfigEntryNotReady(f"Failed to set up services: {service_ex}") from service_ex
         
         # Set up platforms first with minimal info
         _LOGGER.debug("Setting up platform entities")

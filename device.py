@@ -280,9 +280,11 @@ class AprilaireDevice:
 
     async def async_initialize(self) -> bool:
         """Initialize the device with improved error handling and minimal required commands."""
+        _LOGGER.debug("Beginning initialization for thermostat %s", self.address)
         try:
             # Query basic device information - this is essential
             await asyncio.sleep(0.5)  # Add delay before first command
+            _LOGGER.debug("Querying device information for thermostat %s", self.address)
             model_info = await self._send_command_with_retry(f"SN{self.address} ID?", retries=3)
             
             if not model_info:
@@ -290,6 +292,7 @@ class AprilaireDevice:
                 return False
                 
             # Parse model info
+            _LOGGER.debug("Parsing model info: %s", model_info)
             self._parse_model_info(model_info)
             
             # Add delay between commands
@@ -299,27 +302,36 @@ class AprilaireDevice:
             # These queries are important but we continue even if they fail
             try:
                 # Equipment configuration
+                _LOGGER.debug("Querying equipment configuration for thermostat %s", self.address)
                 equip_config = await self._send_command_with_retry(
                     f"SN{self.address} EQUIPCONFIG?", 
                     retries=2,
                     allow_skip=True
                 )
                 if equip_config:
+                    _LOGGER.debug("Received equipment config: %s", equip_config)
                     self._parse_equipment_config(equip_config)
+                else:
+                    _LOGGER.warning("No equipment configuration received for thermostat %s", self.address)
                     
                 # Add delay between commands
                 await asyncio.sleep(0.5)
                 
                 # Controller type
+                _LOGGER.debug("Querying controller type for thermostat %s", self.address)
                 controller_type = await self._send_command_with_retry(
                     f"SN{self.address} CT?", 
                     retries=2,
                     allow_skip=True
                 )
                 if controller_type:
+                    _LOGGER.debug("Received controller type: %s", controller_type)
                     self._parse_controller_type(controller_type)
+                else:
+                    _LOGGER.warning("No controller type received for thermostat %s", self.address)
             except Exception as cap_ex:
-                _LOGGER.warning("Error querying capabilities for thermostat %s: %s", self.address, cap_ex)
+                _LOGGER.error("Error querying capabilities for thermostat %s: %s", self.address, cap_ex)
+                _LOGGER.error("Traceback: %s", traceback.format_exc())
                 # Continue with default capabilities
                 
             # Add delay between commands
@@ -328,48 +340,67 @@ class AprilaireDevice:
             # Get minimal essential state - just enough to prove device works
             try:
                 # Get current temperature and mode
+                _LOGGER.debug("Querying temperature for thermostat %s", self.address)
                 temp_response = await self._send_command_with_retry(
                     f"SN{self.address} TEMP?", 
                     retries=2
                 )
                 if temp_response:
+                    _LOGGER.debug("Received temperature: %s", temp_response)
                     self._process_state_response("TEMP", temp_response)
+                else:
+                    _LOGGER.warning("No temperature response received for thermostat %s", self.address)
                     
+                _LOGGER.debug("Querying mode for thermostat %s", self.address)
                 mode_response = await self._send_command_with_retry(
                     f"SN{self.address} MODE?", 
                     retries=2
                 )
                 if mode_response:
+                    _LOGGER.debug("Received mode: %s", mode_response)
                     self._process_state_response("MODE", mode_response)
+                else:
+                    _LOGGER.warning("No mode response received for thermostat %s", self.address)
                     
                 # Setpoints are also essential for climate control
                 if self._state.get("mode") in ["HEAT", "AUTO", "EMHT"]:
+                    _LOGGER.debug("Querying heat setpoint for thermostat %s", self.address)
                     heat_sp = await self._send_command_with_retry(
                         f"SN{self.address} SH?", 
                         retries=2,
                         allow_skip=True
                     )
                     if heat_sp:
+                        _LOGGER.debug("Received heat setpoint: %s", heat_sp)
                         self._process_state_response("SH", heat_sp)
+                    else:
+                        _LOGGER.warning("No heat setpoint received for thermostat %s", self.address)
                         
                 if self._state.get("mode") in ["COOL", "AUTO"]:
+                    _LOGGER.debug("Querying cool setpoint for thermostat %s", self.address)
                     cool_sp = await self._send_command_with_retry(
                         f"SN{self.address} SC?", 
                         retries=2,
                         allow_skip=True
                     )
                     if cool_sp:
+                        _LOGGER.debug("Received cool setpoint: %s", cool_sp)
                         self._process_state_response("SC", cool_sp)
+                    else:
+                        _LOGGER.warning("No cool setpoint received for thermostat %s", self.address)
             except Exception as state_ex:
-                _LOGGER.warning("Error getting initial state for thermostat %s: %s", self.address, state_ex)
+                _LOGGER.error("Error getting initial state for thermostat %s: %s", self.address, state_ex)
+                _LOGGER.error("Traceback: %s", traceback.format_exc())
                 # Continue even with partial state
             
             # Mark device as available now that we have basic functionality
             self.available = True
+            _LOGGER.debug("Completed initialization for thermostat %s", self.address)
             return True
             
         except Exception as err:
             _LOGGER.error("Error initializing thermostat %s: %s", self.address, err)
+            _LOGGER.error("Traceback: %s", traceback.format_exc())
             self.available = False
             return False
 

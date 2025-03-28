@@ -358,8 +358,10 @@ class AprilaireDataUpdateCoordinator(DataUpdateCoordinator):
         return all_verified
 
     async def _async_update_data(self) -> Dict[str, Dict[str, Any]]:
-        """Update data via polling."""
+        """Update data via polling with improved error handling."""
+        _LOGGER.debug("Beginning data update")
         if not self._connection_state:
+            _LOGGER.error("No connection to Aprilaire network")
             raise UpdateFailed("No connection to Aprilaire network")
             
         try:
@@ -373,19 +375,24 @@ class AprilaireDataUpdateCoordinator(DataUpdateCoordinator):
                 )
             ):
                 try:
+                    _LOGGER.debug("Verifying COS functionality")
                     await self.async_verify_cos_functionality()
                 except Exception as cos_ex:
-                    _LOGGER.exception("Error verifying COS functionality: %s", cos_ex)
+                    _LOGGER.error("Error verifying COS functionality: %s", cos_ex)
+                    _LOGGER.error("Traceback: %s", traceback.format_exc())
                     
             # Initialize data dictionary if needed
             if self._device_data is None:
+                _LOGGER.debug("Initializing device_data dictionary")
                 self._device_data = {}
             if self.data is None:
+                _LOGGER.debug("Initializing data dictionary")
                 self.data = {}
                 
             # Update each device
             if self.devices is not None:
                 for device_id, device in self.devices.items():
+                    _LOGGER.debug("Updating device %s", device_id)
                     try:
                         # Poll device state
                         await device.async_update()
@@ -396,6 +403,7 @@ class AprilaireDataUpdateCoordinator(DataUpdateCoordinator):
                             # Store device state in our data
                             device_id_str = str(device_id)
                             if device_state is not None:
+                                _LOGGER.debug("Updated state for device %s: %s", device_id, device_state)
                                 self._device_data[device_id_str] = device_state
                                 self._device_data[device_id_str]["available"] = device.available
                                 
@@ -408,32 +416,42 @@ class AprilaireDataUpdateCoordinator(DataUpdateCoordinator):
                                     del self._device_data[device_id_str]["from_cache"]
                                 if "from_cache" in self.data[device_id_str]:
                                     del self.data[device_id_str]["from_cache"]
+                            else:
+                                _LOGGER.warning("Device %s returned None state", device_id)
                         except Exception as state_ex:
-                            _LOGGER.exception("Error getting device state for device %s: %s", device_id, state_ex)
+                            _LOGGER.error("Error getting device state for device %s: %s", device_id, state_ex)
+                            _LOGGER.error("Traceback: %s", traceback.format_exc())
                             device_id_str = str(device_id)
                             if device_id_str in self._device_data:
                                 self._device_data[device_id_str]["available"] = False
                             if device_id_str in self.data:
                                 self.data[device_id_str]["available"] = False
                             
-                    except Exception as ex:  # pylint: disable=broad-except
-                        _LOGGER.exception("Error updating device %s: %s", device_id, ex)
+                    except Exception as ex:
+                        _LOGGER.error("Error updating device %s: %s", device_id, ex)
+                        _LOGGER.error("Traceback: %s", traceback.format_exc())
                         device_id_str = str(device_id)
                         if device_id_str in self._device_data:
                             self._device_data[device_id_str]["available"] = False
                         if device_id_str in self.data:
                             self.data[device_id_str]["available"] = False
+            else:
+                _LOGGER.warning("No devices available to update")
             
             # Save state after updates
             try:
+                _LOGGER.debug("Saving state after update")
                 await self._async_save_state()
             except Exception as save_ex:
-                _LOGGER.exception("Error saving state: %s", save_ex)
+                _LOGGER.error("Error saving state: %s", save_ex)
+                _LOGGER.error("Traceback: %s", traceback.format_exc())
             
+            _LOGGER.debug("Data update completed successfully")
             return self._device_data
             
         except Exception as ex:
-            _LOGGER.exception("Error updating data: %s", ex)
+            _LOGGER.error("Error updating data: %s", ex)
+            _LOGGER.error("Traceback: %s", traceback.format_exc())
             raise UpdateFailed(f"Error communicating with Aprilaire devices: {ex}")
 
     async def async_set_heat_setpoint(self, device_id: str, temperature: float) -> None:
