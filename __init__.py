@@ -176,7 +176,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             devices={},  # Will be populated during initialization
             device_manager=None  # Will be set after device_manager is created
         )
-        
+
+        # Initialize data structure for all discovered addresses
+        for address in discovered_addresses:
+            device_id = str(address)
+            coordinator.data[device_id] = {
+                "available": False,
+                "from_cache": False,
+            }
         # Create device manager with protocol and coordinator
         device_manager = AprilaireDeviceManager(coordinator, protocol)
         

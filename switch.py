@@ -133,11 +133,13 @@ class AprilaireSwitch(CoordinatorEntity, SwitchEntity):
     @property
     def available(self) -> bool:
         """Return if entity is available."""
-        # Check if we have data for this device
-        device_data = self.coordinator.data.get(self._device_id)
-        if not device_data:
+        # Check if coordinator or data is missing
+        if not self.coordinator or not hasattr(self.coordinator, "data"):
             return False
             
+        # Check if we have data for this device
+        device_data = self.coordinator.data.get(self._device_id, {})
+        
         # If data is from cache but device is not available, still return True
         if device_data.get("from_cache") and not device_data.get("available", False):
             return True
