@@ -41,6 +41,8 @@ async def async_initialize_devices_background(
     # This ensures coordinator data exists before any device tries to access it
     for address in discovered_addresses:
         device_id = str(address)
+        if coordinator.data is None:
+            coordinator.data = {}
         if device_id not in coordinator.data:
             coordinator.data[device_id] = {
                 "available": False,
@@ -63,6 +65,10 @@ async def async_initialize_devices_background(
                 # Update coordinator data structure with device state
                 device_state = device.get_state() if hasattr(device, "get_state") else {}
                 device_id = str(address)
+                
+                # Ensure coordinator data is initialized
+                if coordinator.data is None:
+                    coordinator.data = {}
                 
                 # Ensure device state has minimum required fields
                 device_state["available"] = device.available
@@ -170,6 +176,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         protocol = AprilaireProtocol(connection)
         
         # Create update coordinator with minimal initial state
+        # Initialize with empty dictionaries to avoid NoneType errors
         coordinator = AprilaireDataUpdateCoordinator(
             hass,
             connection=connection,
@@ -178,12 +185,16 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         )
 
         # Initialize data structure for all discovered addresses
+        if coordinator.data is None:
+            coordinator.data = {}
+            
         for address in discovered_addresses:
             device_id = str(address)
             coordinator.data[device_id] = {
                 "available": False,
                 "from_cache": False,
             }
+            
         # Create device manager with protocol and coordinator
         device_manager = AprilaireDeviceManager(coordinator, protocol)
         
