@@ -169,6 +169,10 @@ class AprilaireDevice:
                 _LOGGER.debug(f"Skipping optional command {cmd} after failure: {err}")
                 continue
 
+    @property
+    def device_id(self) -> int:
+        """Return the device ID (alias for address)."""
+        return self.address
 
     def _process_state_response(self, command: str, response: str) -> None:
         """Process a state query response to update internal state."""
