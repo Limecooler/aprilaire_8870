@@ -372,8 +372,11 @@ class AprilaireDataUpdateCoordinator(DataUpdateCoordinator):
                     > self._cos_verification_interval
                 )
             ):
-                await self.async_verify_cos_functionality()
-                
+                try:
+                    await self.async_verify_cos_functionality()
+                except Exception as cos_ex:
+                    _LOGGER.exception("Error verifying COS functionality: %s", cos_ex)
+                    
             # Initialize data dictionary if needed
             if self._device_data is None:
                 self._device_data = {}
@@ -386,25 +389,35 @@ class AprilaireDataUpdateCoordinator(DataUpdateCoordinator):
                     try:
                         # Poll device state
                         await device.async_update()
-                        device_state = device.get_state()
                         
-                        # Store device state in our data
-                        device_id_str = str(device_id)
-                        self._device_data[device_id_str] = device_state
-                        self._device_data[device_id_str]["available"] = device.available
-                        
-                        # Also update main data structure
-                        self.data[device_id_str] = device_state.copy()
-                        self.data[device_id_str]["available"] = device.available
-                        
-                        # Remove the "from_cache" flag if present
-                        if "from_cache" in self._device_data[device_id_str]:
-                            del self._device_data[device_id_str]["from_cache"]
-                        if "from_cache" in self.data[device_id_str]:
-                            del self.data[device_id_str]["from_cache"]
-                        
+                        try:
+                            device_state = device.get_state()
+                            
+                            # Store device state in our data
+                            device_id_str = str(device_id)
+                            if device_state is not None:
+                                self._device_data[device_id_str] = device_state
+                                self._device_data[device_id_str]["available"] = device.available
+                                
+                                # Also update main data structure
+                                self.data[device_id_str] = device_state.copy()
+                                self.data[device_id_str]["available"] = device.available
+                                
+                                # Remove the "from_cache" flag if present
+                                if "from_cache" in self._device_data[device_id_str]:
+                                    del self._device_data[device_id_str]["from_cache"]
+                                if "from_cache" in self.data[device_id_str]:
+                                    del self.data[device_id_str]["from_cache"]
+                        except Exception as state_ex:
+                            _LOGGER.exception("Error getting device state for device %s: %s", device_id, state_ex)
+                            device_id_str = str(device_id)
+                            if device_id_str in self._device_data:
+                                self._device_data[device_id_str]["available"] = False
+                            if device_id_str in self.data:
+                                self.data[device_id_str]["available"] = False
+                            
                     except Exception as ex:  # pylint: disable=broad-except
-                        _LOGGER.error("Error updating device %s: %s", device_id, ex)
+                        _LOGGER.exception("Error updating device %s: %s", device_id, ex)
                         device_id_str = str(device_id)
                         if device_id_str in self._device_data:
                             self._device_data[device_id_str]["available"] = False
@@ -412,12 +425,15 @@ class AprilaireDataUpdateCoordinator(DataUpdateCoordinator):
                             self.data[device_id_str]["available"] = False
             
             # Save state after updates
-            await self._async_save_state()
+            try:
+                await self._async_save_state()
+            except Exception as save_ex:
+                _LOGGER.exception("Error saving state: %s", save_ex)
             
             return self._device_data
             
         except Exception as ex:
-            _LOGGER.error("Error updating data: %s", ex)
+            _LOGGER.exception("Error updating data: %s", ex)
             raise UpdateFailed(f"Error communicating with Aprilaire devices: {ex}")
 
     async def async_set_heat_setpoint(self, device_id: str, temperature: float) -> None:

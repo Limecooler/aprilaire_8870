@@ -352,33 +352,50 @@ class AprilaireProtocol:
         self, device_id: int, command: str, value: str, timeout: Optional[float] = None
     ) -> Optional[str]:
         """Execute an assignment command and return the response.
-
+        
         Args:
             device_id: The device to send the command to
             command: The command to execute
             value: The value to assign
             timeout: Optional timeout override
-
+            
         Returns:
             The command response value or None if failed
+            
+        Raises:
+            CommandError: If the command fails
         """
         if not hasattr(self, "_connection") or self._connection is None:
             _LOGGER.error("No connection available for executing command")
             return None
-
+            
         try:
             # Create formatted command
             formatted_command = f"SN{device_id} {command}={value}"
-
+            
             # Send the command and get the response
+            _LOGGER.debug("Sending assignment command: %s", formatted_command)
             response = await self._connection.async_send_command(formatted_command)
-
-            # Simply return the full response - validation will be done at a higher level
-            return response
-
+            _LOGGER.debug("Received response for assignment command: %r", response)
+            
+            if not response:
+                _LOGGER.error("No response received for command: %s", formatted_command)
+                return None
+                
+            # Parse the response to extract the value
+            # Expected format: "SN{device_id} {command}={value}"
+            if "=" in response:
+                parts = response.split("=", 1)
+                if len(parts) > 1:
+                    value_part = parts[1].strip()
+                    _LOGGER.debug("Extracted value from response: %r", value_part)
+                    return response
+                
+            return response.strip()
+            
         except Exception as ex:
-            _LOGGER.error("Error executing assignment command %s=%s for device %s: %s",
-                         command, value, device_id, ex)
+            _LOGGER.exception("Error executing assignment command %s=%s for device %s: %s", 
+                            command, value, device_id, ex)
             return None
 
     async def execute_query_command(

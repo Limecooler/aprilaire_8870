@@ -570,29 +570,67 @@ class AprilaireDevice:
             
         try:
             # Set Command Response (CR) to NORMAL to enable COS
-            cr_result = await self.protocol.execute_assignment_command(self.address, CMD_CR, "NORMAL")
-            
-            # Modified validation: Check if response contains "CR=NORMAL" instead of exact matching
-            if not cr_result or "CR=NORMAL" not in cr_result:
-                _LOGGER.error("Failed to set Command Response to NORMAL on thermostat %s", self.address)
+            try:
+                cr_result = await self.protocol.execute_assignment_command(self.address, CMD_CR, "NORMAL")
+                _LOGGER.debug("CR command response raw: %r", cr_result)
+                
+                # Improved validation: Look for CR=NORMAL anywhere in the response
+                # This handles cases where the device name is included in the response
+                if not cr_result:
+                    _LOGGER.error("No response received for CR=NORMAL command on thermostat %s", self.address)
+                    return False
+                    
+                # More flexible check that doesn't require exact match
+                if "CR=NORMAL" not in cr_result:
+                    # Additional debug info
+                    _LOGGER.debug("Response doesn't contain expected 'CR=NORMAL', full response: %r", cr_result)
+                    _LOGGER.error("Failed to set Command Response to NORMAL on thermostat %s", self.address)
+                    return False
+                    
+                _LOGGER.debug("Successfully set CR=NORMAL on thermostat %s", self.address)
+            except Exception as cr_ex:
+                _LOGGER.exception("Exception while setting CR=NORMAL on thermostat %s: %s", 
+                                self.address, cr_ex)
                 return False
             
             # Enable each specified COS flag
             success = True
             for flag in flags:
-                result = await self.protocol.execute_assignment_command(self.address, flag, "ON")
-                # Modified validation: Check if response contains "{flag}=ON" instead of exact matching
-                if not result or f"{flag}=ON" not in result:
-                    _LOGGER.error("Failed to enable COS flag %s on thermostat %s", flag, self.address)
+                try:
+                    # Only enable flags that are in our mapping
+                    result = await self.protocol.execute_assignment_command(self.address, flag, "ON")
+                    _LOGGER.debug("Response for %s=ON command: %r", flag, result)
+                    
+                    # More flexible check for the flag response
+                    if not result:
+                        _LOGGER.error("No response received for %s=ON on thermostat %s", flag, self.address)
+                        success = False
+                    elif f"{flag}=ON" not in result:
+                        _LOGGER.debug("Response doesn't contain expected '%s=ON', full response: %r", 
+                                    flag, result)
+                        _LOGGER.error("Failed to enable COS flag %s on thermostat %s", flag, self.address)
+                        success = False
+                    else:
+                        self._cos_flags.add(flag)
+                        _LOGGER.debug("Successfully enabled COS flag %s on thermostat %s", flag, self.address)
+                except Exception as flag_ex:
+                    _LOGGER.exception("Exception while enabling COS flag %s on thermostat %s: %s", 
+                                    flag, self.address, flag_ex)
                     success = False
-                else:
-                    self._cos_flags.add(flag)
+                    # Continue with other flags even if one fails
             
             self._cos_enabled = success
+            if success:
+                _LOGGER.info("Successfully enabled COS on thermostat %s with flags: %s", 
+                            self.address, ", ".join(self._cos_flags))
+            else:
+                _LOGGER.warning("Failed to enable all COS flags on thermostat %s. Enabled flags: %s", 
+                            self.address, ", ".join(self._cos_flags))
+            
             return success
             
         except Exception as err:
-            _LOGGER.error("Error enabling COS on thermostat %s: %s", self.address, err)
+            _LOGGER.exception("Error enabling COS on thermostat %s: %s", self.address, err)
             self._cos_enabled = False
             return False
 

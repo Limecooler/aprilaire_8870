@@ -65,36 +65,42 @@ async def async_initialize_devices_background(
                 hass.data[DOMAIN][entry.entry_id]["devices"][address] = device
                 
                 # Update coordinator data structure with device state
-                if hasattr(device, "get_state"):
-                    device_state = device.get_state()
-                    device_id = str(address)
-                    
-                    # Ensure coordinator data is initialized
-                    if coordinator.data is None:
-                        coordinator.data = {}
-                    
-                    # Make sure the device_id exists in coordinator.data with a dictionary
-                    if device_id not in coordinator.data:
-                        coordinator.data[device_id] = {}
-                    
-                    # Now it's safe to update
-                    if device_state:  # Also check if device_state is not None
-                        coordinator.data[device_id].update(device_state)
-                    
-                    # Ensure device availability is set
-                    coordinator.data[device_id]["available"] = device.available
-                    
-                    # Immediately trigger a coordinator update for this device
-                    coordinator.async_update_listeners()
+                try:
+                    if hasattr(device, "get_state"):
+                        device_state = device.get_state()
+                        device_id = str(address)
+                        
+                        # Ensure coordinator data is initialized
+                        if coordinator.data is None:
+                            coordinator.data = {}
+                        
+                        # Make sure the device_id exists in coordinator.data with a dictionary
+                        if device_id not in coordinator.data:
+                            coordinator.data[device_id] = {}
+                        
+                        # Now it's safe to update
+                        if device_state:  # Also check if device_state is not None
+                            coordinator.data[device_id].update(device_state)
+                        
+                        # Ensure device availability is set
+                        coordinator.data[device_id]["available"] = device.available
+                        
+                        # Immediately trigger a coordinator update for this device
+                        coordinator.async_update_listeners()
+                except Exception as state_ex:
+                    _LOGGER.exception("Error updating coordinator data for device %s: %s", address, state_ex)
         except Exception as dev_ex:
-            _LOGGER.error("Error initializing device %s in background: %s", address, dev_ex)
+            _LOGGER.exception("Error initializing device %s in background: %s", address, dev_ex)
             # Continue with other devices even if one fails
     
     # Update the coordinator with all discovered devices
     coordinator.devices = initialized_devices
     
     # Perform initial data update for all devices
-    await coordinator.async_refresh()
+    try:
+        await coordinator.async_refresh()
+    except Exception as refresh_ex:
+        _LOGGER.exception("Error performing initial data refresh: %s", refresh_ex)
     
     _LOGGER.info("Background initialization complete for %d thermostats", len(initialized_devices))
     
