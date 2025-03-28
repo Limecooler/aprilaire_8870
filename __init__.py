@@ -63,20 +63,23 @@ async def async_initialize_devices_background(
                 hass.data[DOMAIN][entry.entry_id]["devices"][address] = device
                 
                 # Update coordinator data structure with device state
-                device_state = device.get_state() if hasattr(device, "get_state") else {}
-                device_id = str(address)
-                
-                # Ensure coordinator data is initialized
-                if coordinator.data is None:
-                    coordinator.data = {}
-                
-                # Ensure device state has minimum required fields
-                device_state["available"] = device.available
-                coordinator.data[device_id] = device_state
-                
-                # Immediately trigger a coordinator update for this device
-                # to refresh entity states for just this device
-                coordinator.async_update_listeners()
+                if hasattr(device, "get_state"):
+                    device_state = device.get_state()
+                    device_id = str(address)
+                    
+                    # Ensure coordinator data is initialized
+                    if coordinator.data is None:
+                        coordinator.data = {}
+                    if device_id not in coordinator.data:
+                        coordinator.data[device_id] = {}
+                    
+                    # Merge device state with existing data
+                    coordinator.data[device_id].update(device_state)
+                    # Ensure device availability is set
+                    coordinator.data[device_id]["available"] = device.available
+                    
+                    # Immediately trigger a coordinator update for this device
+                    coordinator.async_update_listeners()
         except Exception as dev_ex:
             _LOGGER.error("Error initializing device %s in background: %s", address, dev_ex)
     
@@ -90,6 +93,7 @@ async def async_initialize_devices_background(
     
     # After all devices are initialized, set up COS functionality in background
     hass.async_create_task(async_setup_cos_background(hass, entry, initialized_devices))
+
 
 async def async_setup_cos_background(
     hass: HomeAssistant, 

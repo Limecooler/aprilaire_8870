@@ -37,66 +37,63 @@ class AprilaireDataUpdateCoordinator(DataUpdateCoordinator):
     """Class to manage fetching Aprilaire thermostat data."""
 
     def __init__(
-        self,
-        hass: HomeAssistant,
-        connection,
-        devices,
-        device_manager,
-        update_interval: int = DEFAULT_UPDATE_INTERVAL,
-        fallback_scan_interval: int = DEFAULT_FALLBACK_SCAN_INTERVAL,
-        cos_verification_interval: int = DEFAULT_COS_VERIFICATION_INTERVAL,
-        enable_cos: bool = True,
-        cos_flags: Set[str] = None,
-    ) -> None:
-        """Initialize the coordinator."""
-        self.connection = connection
-        self.devices = devices or {}  # Ensure devices is always a dictionary
-        self.device_manager = device_manager
-        # Initialize empty data structure
-        self._device_data = {}
-        # Initialize coordinator data with empty dictionary
-        self.data = {}  # Initialize as empty dict rather than None
-        self._cos_enabled = enable_cos
-        self._cos_flags = cos_flags or {
-            COS_FLAG_HVAC_RELAYS,
-            COS_FLAG_TEMPERATURE,
-            COS_FLAG_SETPOINTS,
-            COS_FLAG_MODE,
-            COS_FLAG_FAN,
-            COS_FLAG_ALARMS,
-            COS_FLAG_ERRORS,
-        }
-        self._fallback_scan_interval = fallback_scan_interval
-        self._normal_scan_interval = update_interval
-        self._cos_verification_interval = cos_verification_interval
-        self._last_cos_verification = None
-        self._cos_verified = False
-        self._connection_state = False
-        self._cos_message_queue = asyncio.Queue()
-        self._cos_processor_task = None
-        self._store = Store(hass, STORAGE_VERSION, STORAGE_KEY)
-        self._cached_state = None
-        self._state_loaded = False
-        
-        # Start with fallback interval until COS is verified
-        current_update_interval = timedelta(seconds=fallback_scan_interval)
-        
-        super().__init__(
-            hass,
-            _LOGGER,
-            name=DOMAIN,
-            update_interval=current_update_interval,
-        )
+            self,
+            hass: HomeAssistant,
+            connection,
+            devices,
+            device_manager,
+            update_interval: int = DEFAULT_UPDATE_INTERVAL,
+            fallback_scan_interval: int = DEFAULT_FALLBACK_SCAN_INTERVAL,
+            cos_verification_interval: int = DEFAULT_COS_VERIFICATION_INTERVAL,
+            enable_cos: bool = True,
+            cos_flags: Set[str] = None,
+        ) -> None:
+            """Initialize the coordinator."""
+            self.connection = connection
+            self.devices = devices or {}  # Ensure devices is always a dictionary
+            self.device_manager = device_manager
+            # Initialize empty data structure
+            self._device_data = {}
+            # Initialize coordinator data with empty dictionary
+            self.data = {}  # Initialize as empty dict rather than None
+            self._cos_enabled = enable_cos
+            self._cos_flags = cos_flags or {
+                COS_FLAG_HVAC_RELAYS,
+                COS_FLAG_TEMPERATURE,
+                COS_FLAG_SETPOINTS,
+                COS_FLAG_MODE,
+                COS_FLAG_FAN,
+                COS_FLAG_ALARMS,
+                COS_FLAG_ERRORS,
+            }
+            self._fallback_scan_interval = fallback_scan_interval
+            self._normal_scan_interval = update_interval
+            self._cos_verification_interval = cos_verification_interval
+            self._last_cos_verification = None
+            self._cos_verified = False
+            self._connection_state = False
+            self._cos_message_queue = asyncio.Queue()
+            self._cos_processor_task = None
+            self._store = Store(hass, STORAGE_VERSION, STORAGE_KEY)
+            self._cached_state = None
+            self._state_loaded = False
+            
+            # Start with fallback interval until COS is verified
+            current_update_interval = timedelta(seconds=fallback_scan_interval)
+            
+            super().__init__(
+                hass,
+                _LOGGER,
+                name=DOMAIN,
+                update_interval=current_update_interval,
+            )
 
-        # Initialize device data
-        for device_id, device in devices.items():
-            device_id_str = str(device_id)
-            self._device_data[device_id_str] = {"available": device.available}
-            # Also initialize in the main data structure
-            self.data[device_id_str] = {"available": device.available}
-
-        # Load stored state
-        self.hass.async_create_task(self._async_load_stored_state())
+            # Initialize device data
+            for device_id, device in devices.items():
+                device_id_str = str(device_id)
+                self._device_data[device_id_str] = {"available": device.available}
+                # Also initialize in the main data structure
+                self.data[device_id_str] = {"available": device.available}
 
     async def _async_load_stored_state(self) -> None:
         """Load stored state from disk."""
