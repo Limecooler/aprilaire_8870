@@ -116,19 +116,45 @@ class AprilaireClimate(CoordinatorEntity, ClimateEntity):
         """Initialize the thermostat."""
         super().__init__(coordinator)
         self._device = device
-        self._device_id = str(device.address)
+        # Safely get device_id
+        if device is not None and hasattr(device, "address"):
+            self._device_id = str(device.address)
+        else:
+            # Generate a fallback ID if device doesn't have an address
+            self._device_id = f"unknown_{id(self)}"
         
         # Set unique_id based on device address
-        self._attr_unique_id = f"{DOMAIN}_{device.address}_climate"
+        self._attr_unique_id = f"{DOMAIN}_{self._device_id}_climate"
         
         # Set device info
         self._attr_device_info = DeviceInfo(
-            identifiers={(DOMAIN, str(device.address))},
-            name=device.name,
+            identifiers={(DOMAIN, self._device_id)},
+            name=getattr(device, "name", f"Aprilaire {self._device_id}"),
             manufacturer="Aprilaire",
-            model=device.model,
-            sw_version=device.firmware_version,
+            model=getattr(device, "model", "8870"),
+            sw_version=getattr(device, "firmware_version", None),
         )
+
+    @property
+    def device_info(self) -> Dict[str, Any]:
+        """Return device info for this device."""
+        # Check if device is None
+        if self._device is None:
+            return {
+                "identifiers": {(DOMAIN, self._device_id)},
+                "name": f"Aprilaire {self._device_id}",
+                "manufacturer": "Aprilaire",
+                "model": "8870",
+            }
+        
+        # Return device info for a valid device
+        return {
+            "identifiers": {(DOMAIN, self._device_id)},
+            "name": getattr(self._device, "name", f"Aprilaire {self._device_id}"),
+            "manufacturer": "Aprilaire",
+            "model": getattr(self._device, "model", "8870"),
+            "sw_version": getattr(self._device, "firmware_version", None),
+        }
 
     @property
     def available(self) -> bool:

@@ -78,7 +78,12 @@ class AprilaireSensor(CoordinatorEntity, SensorEntity):
         """Initialize the sensor."""
         super().__init__(coordinator)
         self._device_id = device_id
-        self._device = coordinator.devices[device_id]
+        # Safely get device
+        if hasattr(coordinator, "devices") and coordinator.devices is not None:
+            self._device = coordinator.devices.get(device_id)
+        else:
+            self._device = None
+            
         self._attr_name = name
         self._attr_unique_id = f"{DOMAIN}_{device_id}_{unique_id_suffix}"
         self._attr_device_class = device_class
@@ -87,15 +92,27 @@ class AprilaireSensor(CoordinatorEntity, SensorEntity):
         
         if entity_category:
             self._attr_entity_category = entity_category
+
+    @property
+    def device_info(self) -> Dict[str, Any]:
+        """Return device info for this device."""
+        # Check if device is None
+        if self._device is None:
+            return {
+                "identifiers": {(DOMAIN, self._device_id)},
+                "name": f"Aprilaire {self._device_id}",
+                "manufacturer": "Aprilaire",
+                "model": "8870",
+            }
         
-        # Set device info
-        self._attr_device_info = DeviceInfo(
-            identifiers={(DOMAIN, device_id)},
-            name=self._device.get("name", f"Aprilaire {device_id}"),
-            manufacturer="Aprilaire",
-            model="8870",
-            sw_version=self._device.get("firmware_version", ""),
-        )
+        # Return device info for a valid device
+        return {
+            "identifiers": {(DOMAIN, self._device_id)},
+            "name": getattr(self._device, "name", f"Aprilaire {self._device_id}"),
+            "manufacturer": "Aprilaire",
+            "model": getattr(self._device, "model", "8870"),
+            "sw_version": getattr(self._device, "firmware_version", None),
+        }
     
     @property
     def available(self) -> bool:

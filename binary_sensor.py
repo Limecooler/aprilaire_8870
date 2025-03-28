@@ -95,9 +95,23 @@ class AprilaireBinarySensor(CoordinatorEntity, BinarySensorEntity):
         """Initialize the sensor."""
         super().__init__(coordinator)
         self._device = device
-        self._device_id = str(device.address)
-        self._attr_name = f"{device.name} {name_suffix}"
-        self._attr_unique_id = f"{device.unique_id}_{unique_id_suffix}"
+        # Safely get device_id
+        if device is not None and hasattr(device, "address"):
+            self._device_id = str(device.address)
+        else:
+            # Generate a fallback ID if device doesn't have an address
+            self._device_id = f"unknown_{id(self)}"
+        
+        # Safely build name and unique_id
+        if device is not None:
+            device_name = getattr(device, "name", f"Aprilaire {self._device_id}")
+            device_unique_id = getattr(device, "unique_id", f"{DOMAIN}_{self._device_id}")
+        else:
+            device_name = f"Aprilaire {self._device_id}"
+            device_unique_id = f"{DOMAIN}_{self._device_id}"
+            
+        self._attr_name = f"{device_name} {name_suffix}"
+        self._attr_unique_id = f"{device_unique_id}_{unique_id_suffix}"
         self._attr_device_class = device_class
         self._attr_entity_category = entity_category
         self._attr_has_entity_name = True
@@ -105,7 +119,23 @@ class AprilaireBinarySensor(CoordinatorEntity, BinarySensorEntity):
     @property
     def device_info(self) -> Dict[str, Any]:
         """Return device info for this device."""
-        return self._device.device_info
+        # Check if device is None
+        if self._device is None:
+            return {
+                "identifiers": {(DOMAIN, self._device_id)},
+                "name": f"Aprilaire {self._device_id}",
+                "manufacturer": "Aprilaire",
+                "model": "8870",
+            }
+        
+        # Return device info for a valid device
+        return {
+            "identifiers": {(DOMAIN, self._device_id)},
+            "name": getattr(self._device, "name", f"Aprilaire {self._device_id}"),
+            "manufacturer": "Aprilaire",
+            "model": getattr(self._device, "model", "8870"),
+            "sw_version": getattr(self._device, "firmware_version", None),
+        }
         
     @property
     def available(self) -> bool:
