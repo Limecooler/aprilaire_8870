@@ -283,6 +283,86 @@ class AprilaireConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         # Create entry
         title = f"Aprilaire Thermostat ({len(discovered_thermostats)} devices)"
         return self.async_create_entry(title=title, data=self.connection_config)
+            """Discover thermostats using the established connection, but minimally."""
+            discovered_thermostats = []
+            error = None
+            
+            try:
+                # Start the read task to receive responses
+                await self.connection.async_start_reading()
+                
+                # Wait a moment for the read task to start
+                await asyncio.sleep(0.5)
+                
+                # Send SN? command to discover thermostats
+                _LOGGER.debug("Sending discovery command SN?")
+                await self.connection.async_send_command("SN?")
+                
+                # Wait for responses (thermostats respond in sequence)
+                # This timeout should be sufficient for several thermostats to respond
+                await asyncio.sleep(3)
+                
+                # Get received messages
+                responses = self.connection.get_received_messages()
+                _LOGGER.debug("Discovery responses received: %s", responses)
+                
+                # Parse responses to get thermostat addresses
+                if responses:
+                    for line in responses:
+                        if line.startswith("SN"):
+                            address = line[2:].strip()
+                            if address.isdigit():
+                                discovered_thermostats.append(int(address))
+                
+                # Sort addresses
+                discovered_thermostats.sort()
+                _LOGGER.debug("Discovered thermostats: %s", discovered_thermostats)
+                
+                # Get minimal info about first thermostat to confirm it's an Aprilaire 8870
+                # without doing full initialization
+                if discovered_thermostats:
+                    model_cmd = f"SN{discovered_thermostats[0]} ID?"
+                    _LOGGER.debug("Sending model query: %s", model_cmd)
+                    await self.connection.async_send_command(model_cmd)
+                    
+                    # Wait for response
+                    await asyncio.sleep(1)
+                    
+                    # Get response
+                    model_responses = self.connection.get_received_messages()
+                    _LOGGER.debug("Model responses received: %s", model_responses)
+                    
+                    model_response = model_responses[0] if model_responses else ""
+                    
+                    if not model_response or "8870" not in model_response:
+                        _LOGGER.warning("Not an Aprilaire 8870 model: %s", model_response)
+                        error = "not_aprilaire_8870"
+            except Exception as ex:
+                _LOGGER.exception("Error during discovery: %s", ex)
+                error = "discovery_error"
+            finally:
+                # Stop the read task
+                if hasattr(self, "connection") and self.connection is not None:
+                    await self.connection.async_stop_reading()
+                    await self.connection.async_disconnect()
+                    self.connection = None
+            
+            if error:
+                return self.async_abort(reason=error)
+            
+            if not discovered_thermostats:
+                return self.async_abort(reason="no_devices_found")
+            
+            # Add discovered thermostats to config WITHOUT full initialization
+            self.connection_config["discovered_thermostats"] = discovered_thermostats
+            
+            # Set default values
+            self.connection_config[CONF_SCAN_INTERVAL] = DEFAULT_SCAN_INTERVAL
+            self.connection_config[CONF_ENABLE_COS] = True
+            
+            # Create entry
+            title = f"Aprilaire Thermostat ({len(discovered_thermostats)} devices)"
+            return self.async_create_entry(title=title, data=self.connection_config)
 
     def _create_connection(self, config: dict[str, Any]) -> AprilaireConnectionBase:
         """Create appropriate connection instance based on config."""

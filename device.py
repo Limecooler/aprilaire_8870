@@ -109,6 +109,24 @@ class AprilaireDevice:
         self._cos_enabled = False
         self._cos_flags = set()
 
+    def update_from_real_device(self, real_device):
+        """Update properties from a fully initialized device.
+        
+        This is used when a placeholder device is replaced with a real one
+        after background initialization.
+        
+        Args:
+            real_device: The fully initialized device
+        """
+        self.model = real_device.model
+        self.firmware_version = real_device.firmware_version
+        self.available = real_device.available
+        self.capabilities = real_device.capabilities
+        self.protocol = real_device.protocol
+        self._state = real_device._state
+        self._cos_enabled = real_device._cos_enabled
+        self._cos_flags = real_device._cos_flags
+
     async def _update_with_delays(self) -> None:
         """Update device state with delays between commands."""
         # Sequential command execution with delays
@@ -350,7 +368,6 @@ class AprilaireDevice:
             _LOGGER.error("Error initializing thermostat %s: %s", self.address, err)
             self.available = False
             return False
-
 
     async def async_update(self) -> bool:
         """Update device state by querying the thermostat with error handling."""
@@ -1136,6 +1153,23 @@ class AprilaireDeviceManager:
         else:
             _LOGGER.error("Failed to initialize thermostat %s", address)
             return None
+    
+    async def update_placeholder_device(self, address: int, real_device) -> None:
+        """Update a placeholder device with a fully initialized one.
+        
+        Args:
+            address: The device address
+            real_device: The fully initialized device
+        """
+        # Check if we have an existing placeholder
+        if address in self.devices and not self.devices[address].protocol:
+            # Update the placeholder with real device properties
+            self.devices[address].update_from_real_device(real_device)
+            _LOGGER.debug("Updated placeholder device %s with real device", address)
+        else:
+            # Replace the device
+            self.devices[address] = real_device
+            _LOGGER.debug("Replaced placeholder device %s with real device", address)
 
     async def async_update_all(self) -> None:
         """Update all managed devices."""

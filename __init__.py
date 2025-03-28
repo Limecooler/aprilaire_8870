@@ -236,4 +236,3 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             del hass.data[DOMAIN]
     
     return unload_ok
-

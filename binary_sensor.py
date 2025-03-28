@@ -27,34 +27,58 @@ async def async_setup_entry(
     """Set up Aprilaire binary sensor entities based on a config entry."""
     coordinator = hass.data[DOMAIN][config_entry.entry_id]["coordinator"]
     devices = hass.data[DOMAIN][config_entry.entry_id]["devices"]
+    discovered_addresses = hass.data[DOMAIN][config_entry.entry_id]["discovered_addresses"]
     
     entities = []
     
-    for device_id, device in devices.items():
-        # Only add sensors for capabilities the device has
-        
-        # HVAC status sensors
-        entities.append(AprilaireHeatingStatusSensor(coordinator, device))
-        entities.append(AprilaireCoolingStatusSensor(coordinator, device))
-        
-        # Fan status
-        entities.append(AprilaireFanStatusSensor(coordinator, device))
-        
-        # Emergency heat - only for heat pumps
-        if device.is_heat_pump:
-            entities.append(AprilaireEmergencyHeatStatusSensor(coordinator, device))
-        
-        # Filter status
-        entities.append(AprilaireFilterStatusSensor(coordinator, device))
-        
-        # System error status
-        entities.append(AprilaireSystemErrorStatusSensor(coordinator, device))
-        
-        # Network override status
-        entities.append(AprilaireNetworkOverrideStatusSensor(coordinator, device))
+    # Create entities for both initialized devices and discovered addresses
+    all_device_ids = set(devices.keys()) | set(discovered_addresses)
+    
+    for device_id in all_device_ids:
+        # If device is already initialized, use the device object
+        if device_id in devices:
+            device = devices[device_id]
+            
+            # Add sensors based on device capabilities
+            entities.append(AprilaireHeatingStatusSensor(coordinator, device))
+            entities.append(AprilaireCoolingStatusSensor(coordinator, device))
+            entities.append(AprilaireFanStatusSensor(coordinator, device))
+            
+            # Emergency heat - only for heat pumps
+            if device.is_heat_pump:
+                entities.append(AprilaireEmergencyHeatStatusSensor(coordinator, device))
+            
+            # Filter status
+            entities.append(AprilaireFilterStatusSensor(coordinator, device))
+            
+            # System error status
+            entities.append(AprilaireSystemErrorStatusSensor(coordinator, device))
+            
+            # Network override status
+            entities.append(AprilaireNetworkOverrideStatusSensor(coordinator, device))
+        else:
+            # Device not fully initialized yet, use minimal placeholder
+            from .device import AprilaireDevice
+            
+            # Create minimal device
+            minimal_device = AprilaireDevice(
+                address=device_id,
+                coordinator=coordinator,
+                protocol=None  # Will be set later during initialization
+            )
+            minimal_device.name = f"Aprilaire {device_id}"
+            minimal_device.unique_id = f"{DOMAIN}_{device_id}"
+            minimal_device.is_heat_pump = False  # Assume not a heat pump until we know
+            
+            # Add basic sensors that don't depend on specific capabilities
+            entities.append(AprilaireHeatingStatusSensor(coordinator, minimal_device))
+            entities.append(AprilaireCoolingStatusSensor(coordinator, minimal_device))
+            entities.append(AprilaireFanStatusSensor(coordinator, minimal_device))
+            entities.append(AprilaireFilterStatusSensor(coordinator, minimal_device))
+            entities.append(AprilaireSystemErrorStatusSensor(coordinator, minimal_device))
+            entities.append(AprilaireNetworkOverrideStatusSensor(coordinator, minimal_device))
 
     async_add_entities(entities)
-
 
 class AprilaireBinarySensor(CoordinatorEntity, BinarySensorEntity):
     """Base class for Aprilaire binary sensor entities."""
@@ -71,6 +95,7 @@ class AprilaireBinarySensor(CoordinatorEntity, BinarySensorEntity):
         """Initialize the sensor."""
         super().__init__(coordinator)
         self._device = device
+        self._device_id = str(device.address)
         self._attr_name = f"{device.name} {name_suffix}"
         self._attr_unique_id = f"{device.unique_id}_{unique_id_suffix}"
         self._attr_device_class = device_class
@@ -81,7 +106,33 @@ class AprilaireBinarySensor(CoordinatorEntity, BinarySensorEntity):
     def device_info(self) -> Dict[str, Any]:
         """Return device info for this device."""
         return self._device.device_info
-
+        
+    @property
+    def available(self) -> bool:
+        """Return if entity is available."""
+        # Check if we have data for this device
+        device_data = self.coordinator.data.get(self._device_id)
+        if not device_data:
+            return False
+            
+        # If data is from cache but device is not available, still return True
+        if device_data.get("from_cache") and not device_data.get("available", False):
+            return True
+            
+        # Otherwise, follow standard availability logic
+        return self.coordinator.last_update_success and device_data.get("available", False)
+        
+    @property
+    def extra_state_attributes(self) -> Dict[str, Any]:
+        """Return additional attributes about the sensor."""
+        device_data = self.coordinator.data.get(self._device_id, {})
+        
+        attrs = {}
+        # Add indicator if data is from cache
+        if device_data.get("from_cache", False):
+            attrs["from_cache"] = True
+            
+        return attrs
 
 class AprilaireHeatingStatusSensor(AprilaireBinarySensor):
     """Binary sensor for heating status."""

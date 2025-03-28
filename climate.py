@@ -53,13 +53,35 @@ async def async_setup_entry(
     """Set up Aprilaire climate based on config_entry."""
     coordinator = hass.data[DOMAIN][entry.entry_id]["coordinator"]
     devices = hass.data[DOMAIN][entry.entry_id]["devices"]
+    discovered_addresses = hass.data[DOMAIN][entry.entry_id]["discovered_addresses"]
     
     entities = []
-    for device_id, device in devices.items():
-        entities.append(AprilaireClimate(coordinator, device))
     
-    async_add_entities(entities, True)
-
+    # Create entities for both initialized devices and discovered addresses
+    all_device_ids = set(devices.keys()) | set(discovered_addresses)
+    
+    for device_id in all_device_ids:
+        # If device is already initialized, use the device object
+        if device_id in devices:
+            device = devices[device_id]
+            entities.append(AprilaireClimate(coordinator, device))
+        else:
+            # Device not fully initialized yet, use minimal placeholder
+            from .device import AprilaireDevice
+            
+            # Create minimal device
+            minimal_device = AprilaireDevice(
+                address=device_id,
+                coordinator=coordinator,
+                protocol=None  # Will be set later during initialization
+            )
+            minimal_device.name = f"Aprilaire {device_id}"
+            minimal_device.unique_id = f"{DOMAIN}_{device_id}"
+            minimal_device.model = "8870"
+            
+            entities.append(AprilaireClimate(coordinator, minimal_device))
+    
+    async_add_entities(entities)
 
 class AprilaireClimate(CoordinatorEntity, ClimateEntity):
     """Representation of an Aprilaire Thermostat."""
@@ -94,6 +116,7 @@ class AprilaireClimate(CoordinatorEntity, ClimateEntity):
         """Initialize the thermostat."""
         super().__init__(coordinator)
         self._device = device
+        self._device_id = str(device.address)
         
         # Set unique_id based on device address
         self._attr_unique_id = f"{DOMAIN}_{device.address}_climate"
@@ -110,42 +133,52 @@ class AprilaireClimate(CoordinatorEntity, ClimateEntity):
     @property
     def available(self) -> bool:
         """Return if entity is available."""
-        return self.coordinator.last_update_success and self._device.available
+        # Check if we have data for this device
+        device_data = self.coordinator.data.get(self._device_id)
+        if not device_data:
+            return False
+            
+        # If data is from cache but device is not available, still return True
+        if device_data.get("from_cache") and not device_data.get("available", False):
+            return True
+            
+        # Otherwise, follow standard availability logic
+        return self.coordinator.last_update_success and device_data.get("available", False)
 
     @property
     def current_temperature(self) -> Optional[float]:
         """Return the current temperature."""
-        state = self._device.get_state()
-        return state.get("temperature")
+        device_data = self.coordinator.data.get(self._device_id, {})
+        return device_data.get("temperature")
 
     @property
     def target_temperature(self) -> Optional[float]:
         """Return the temperature we try to reach."""
-        state = self._device.get_state()
+        device_data = self.coordinator.data.get(self._device_id, {})
         if self.hvac_mode == HVACMode.HEAT:
-            return state.get("heat_setpoint")
+            return device_data.get("heat_setpoint")
         if self.hvac_mode == HVACMode.COOL:
-            return state.get("cool_setpoint")
+            return device_data.get("cool_setpoint")
         return None
 
     @property
     def current_humidity(self) -> Optional[int]:
         """Return the current humidity."""
-        state = self._device.get_state()
-        return state.get("humidity")
+        device_data = self.coordinator.data.get(self._device_id, {})
+        return device_data.get("humidity")
 
     @property
     def hvac_mode(self) -> HVACMode:
         """Return hvac operation mode."""
-        state = self._device.get_state()
-        mode = state.get("mode")
+        device_data = self.coordinator.data.get(self._device_id, {})
+        mode = device_data.get("mode")
         return HVAC_MODE_APRILAIRE_TO_HA.get(mode, HVACMode.OFF)
 
     @property
     def hvac_action(self) -> Optional[HVACAction]:
         """Return the current HVAC action."""
-        state = self._device.get_state()
-        relay_status = state.get("hvac_status", "")
+        device_data = self.coordinator.data.get(self._device_id, {})
+        relay_status = device_data.get("hvac_status", "")
         
         # Determine action based on relay status
         if relay_status:
@@ -161,35 +194,40 @@ class AprilaireClimate(CoordinatorEntity, ClimateEntity):
     @property
     def fan_mode(self) -> Optional[str]:
         """Return the fan setting."""
-        state = self._device.get_state()
-        fan_mode = state.get("fan_mode")
+        device_data = self.coordinator.data.get(self._device_id, {})
+        fan_mode = device_data.get("fan_mode")
         return FAN_MODE_APRILAIRE_TO_HA.get(fan_mode, FAN_AUTO)
 
     @property
     def extra_state_attributes(self) -> Dict[str, Any]:
         """Return the state attributes of the device."""
+        device_data = self.coordinator.data.get(self._device_id, {})
+        
         attrs = {}
-        state = self._device.get_state()
         
         # Add outdoor temperature if available
-        if (outdoor_temp := state.get("outdoor_temperature")) is not None:
+        if (outdoor_temp := device_data.get("outdoor_temperature")) is not None:
             attrs[ATTR_OUTDOOR_TEMPERATURE] = outdoor_temp
             
         # Add indoor humidity if available
-        if (indoor_humidity := state.get("humidity")) is not None:
+        if (indoor_humidity := device_data.get("humidity")) is not None:
             attrs[ATTR_INDOOR_HUMIDITY] = indoor_humidity
             
         # Add HVAC relay status
-        if (relay_status := state.get("hvac_status")) is not None:
+        if (relay_status := device_data.get("hvac_status")) is not None:
             attrs[ATTR_HVAC_RELAY_STATUS] = relay_status
             
         # Add filter status
-        if (filter_status := state.get("filter_alarm")) is not None:
+        if (filter_status := device_data.get("filter_alarm")) is not None:
             attrs[ATTR_FILTER_STATUS] = filter_status
             
         # Add hold status
-        if (hold_status := state.get("hold_status")) is not None:
+        if (hold_status := device_data.get("hold_status")) is not None:
             attrs[ATTR_HOLD_STATUS] = hold_status
+            
+        # Add indicator if data is from cache
+        if device_data.get("from_cache", False):
+            attrs["from_cache"] = True
             
         return attrs
 
@@ -200,19 +238,28 @@ class AprilaireClimate(CoordinatorEntity, ClimateEntity):
             
         temperature = kwargs[ATTR_TEMPERATURE]
         
+        # For cached-only state, mark operation as pending but don't actually execute
+        device_data = self.coordinator.data.get(self._device_id, {})
+        if device_data.get("from_cache", False) and not device_data.get("available", False):
+            _LOGGER.info(
+                "Device is operating from cached state and unavailable, "
+                "command will be applied when device becomes available"
+            )
+            return
+            
         if self.hvac_mode == HVACMode.HEAT:
-            await self._device.async_set_temperature(temperature, "HEAT")
+            await self.coordinator.async_set_heat_setpoint(self._device_id, temperature)
         elif self.hvac_mode == HVACMode.COOL:
-            await self._device.async_set_temperature(temperature, "COOL")
+            await self.coordinator.async_set_cool_setpoint(self._device_id, temperature)
         elif self.hvac_mode == HVACMode.AUTO or self.hvac_mode == HVACMode.HEAT_COOL:
             # In AUTO mode, adjust the active setpoint based on current operation
             if self.hvac_action == HVACAction.HEATING:
-                await self._device.async_set_temperature(temperature, "HEAT")
+                await self.coordinator.async_set_heat_setpoint(self._device_id, temperature)
             elif self.hvac_action == HVACAction.COOLING:
-                await self._device.async_set_temperature(temperature, "COOL")
+                await self.coordinator.async_set_cool_setpoint(self._device_id, temperature)
             else:
                 # Default to heat setpoint if system is idle
-                await self._device.async_set_temperature(temperature, "HEAT")
+                await self.coordinator.async_set_heat_setpoint(self._device_id, temperature)
                 
         # Request data update
         await self.coordinator.async_request_refresh()
@@ -223,8 +270,17 @@ class AprilaireClimate(CoordinatorEntity, ClimateEntity):
         if aprilaire_mode is None:
             _LOGGER.error("Unsupported HVAC mode: %s", hvac_mode)
             return
+        
+        # For cached-only state, mark operation as pending but don't actually execute
+        device_data = self.coordinator.data.get(self._device_id, {})
+        if device_data.get("from_cache", False) and not device_data.get("available", False):
+            _LOGGER.info(
+                "Device is operating from cached state and unavailable, "
+                "command will be applied when device becomes available"
+            )
+            return
             
-        await self._device.async_set_hvac_mode(hvac_mode)
+        await self.coordinator.async_set_hvac_mode(self._device_id, hvac_mode)
         
         # Request data update
         await self.coordinator.async_request_refresh()
@@ -235,8 +291,17 @@ class AprilaireClimate(CoordinatorEntity, ClimateEntity):
         if aprilaire_fan_mode is None:
             _LOGGER.error("Unsupported fan mode: %s", fan_mode)
             return
+        
+        # For cached-only state, mark operation as pending but don't actually execute
+        device_data = self.coordinator.data.get(self._device_id, {})
+        if device_data.get("from_cache", False) and not device_data.get("available", False):
+            _LOGGER.info(
+                "Device is operating from cached state and unavailable, "
+                "command will be applied when device becomes available"
+            )
+            return
             
-        await self._device.async_set_fan_mode(fan_mode)
+        await self.coordinator.async_set_fan_mode(self._device_id, fan_mode)
         
         # Request data update
         await self.coordinator.async_request_refresh()
@@ -250,4 +315,3 @@ class AprilaireClimate(CoordinatorEntity, ClimateEntity):
     async def async_turn_off(self) -> None:
         """Turn the entity off."""
         await self.async_set_hvac_mode(HVACMode.OFF)
-

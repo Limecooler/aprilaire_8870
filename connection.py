@@ -102,6 +102,40 @@ class AprilaireConnectionBase(ABC):
     async def async_disconnect(self) -> None:
         """Close the connection."""
         pass
+    
+    async def async_reconnect_with_backoff(self) -> bool:
+        """Attempt to reconnect with backoff strategy.
+        
+        Returns:
+            True if reconnection was successful, False otherwise
+        """
+        backoff_time = 1
+        max_backoff = 60  # Maximum backoff time in seconds
+        attempt = 1
+        max_attempts = 5
+        
+        while attempt <= max_attempts:
+            _LOGGER.debug(
+                "Reconnection attempt %d with backoff time %d seconds",
+                attempt,
+                backoff_time
+            )
+            
+            # Try to connect
+            connected = await self.async_connect()
+            if connected:
+                _LOGGER.info("Successfully reconnected on attempt %d", attempt)
+                return True
+                
+            # Wait with backoff
+            await asyncio.sleep(backoff_time)
+            
+            # Increase backoff time for next attempt
+            backoff_time = min(backoff_time * 2, max_backoff)
+            attempt += 1
+            
+        _LOGGER.error("Failed to reconnect after %d attempts", max_attempts)
+        return False
         
     @abstractmethod
     async def async_send_command(self, command: str) -> Optional[str]:

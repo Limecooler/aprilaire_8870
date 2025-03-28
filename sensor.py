@@ -39,37 +39,25 @@ async def async_setup_entry(
     """Set up Aprilaire sensors based on config_entry."""
     coordinator = hass.data[DOMAIN][entry.entry_id]["coordinator"]
     devices = hass.data[DOMAIN][entry.entry_id]["devices"]
+    discovered_addresses = hass.data[DOMAIN][entry.entry_id]["discovered_addresses"]
     
     entities = []
-    for device_id, device in devices.items():
-        # Always add temperature sensor
-        entities.append(AprilaireTemperatureSensor(coordinator, device))
-        
-        # Add humidity sensor if capability exists
-        if device.capabilities.get("has_humidity_sensor", False):
-            entities.append(AprilaireHumiditySensor(coordinator, device))
-        
-        # Add outdoor temperature sensor if available
-        if device.capabilities.get("has_outdoor_temp_sensor", False):
-            entities.append(AprilaireOutdoorTemperatureSensor(coordinator, device))
-        
-        # Add outdoor humidity sensor if available
-        if device.capabilities.get("has_outdoor_humidity_sensor", False):
-            entities.append(AprilaireOutdoorHumiditySensor(coordinator, device))
-        
-        # Add remote temperature sensors if available
-        remote_sensors = device.capabilities.get("support_modules", {})
-        for sensor_id, sensor_info in remote_sensors.items():
-            if isinstance(sensor_info, dict):  # Ensure it's a dictionary before accessing
-                entities.append(AprilaireRemoteSensor(
-                    coordinator, 
-                    device, 
-                    sensor_id, 
-                    sensor_info.get("name", f"Remote Sensor {sensor_id}"),
-                    sensor_info.get("type", "temperature")
-                ))
     
-    async_add_entities(entities, True)
+    # Create entities for both initialized devices and discovered addresses
+    all_device_ids = set(devices.keys()) | set(discovered_addresses)
+    
+    for device_id in all_device_ids:
+        # Always add temperature sensor
+        entities.append(AprilaireTemperatureSensor(coordinator, str(device_id)))
+        
+        # Add humidity sensor for all devices initially
+        # This will be hidden if the device doesn't support it
+        entities.append(AprilaireHumiditySensor(coordinator, str(device_id)))
+        
+        # Add outdoor temperature sensor for all devices initially
+        entities.append(AprilaireOutdoorTemperatureSensor(coordinator, str(device_id)))
+    
+    async_add_entities(entities)
 
 class AprilaireSensor(CoordinatorEntity, SensorEntity):
     """Base class for Aprilaire sensors."""
@@ -112,8 +100,29 @@ class AprilaireSensor(CoordinatorEntity, SensorEntity):
     @property
     def available(self) -> bool:
         """Return if entity is available."""
-        return self.coordinator.last_update_success and self._device.get("available", False)
-
+        # Check if we have data for this device
+        device_data = self.coordinator.data.get(self._device_id)
+        if not device_data:
+            return False
+            
+        # If data is from cache but device is not available, still return True
+        if device_data.get("from_cache") and not device_data.get("available", False):
+            return True
+            
+        # Otherwise, follow standard availability logic
+        return self.coordinator.last_update_success and device_data.get("available", False)
+        
+    @property
+    def extra_state_attributes(self) -> Dict[str, Any]:
+        """Return additional attributes about the sensor."""
+        device_data = self.coordinator.data.get(self._device_id, {})
+        
+        attrs = {}
+        # Add indicator if data is from cache
+        if device_data.get("from_cache", False):
+            attrs["from_cache"] = True
+            
+        return attrs
 
 class AprilaireTemperatureSensor(AprilaireSensor):
     """Representation of an Aprilaire temperature sensor."""

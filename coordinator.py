@@ -8,6 +8,7 @@ from typing import Any, Dict, List, Optional, Set
 
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
+from homeassistant.helpers.storage import Store
 from homeassistant.util import dt as dt_util
 
 from .const import (
@@ -25,6 +26,11 @@ from .const import (
 )
 
 _LOGGER = logging.getLogger(__name__)
+
+# Storage version for state persistence
+STORAGE_VERSION = 1
+# Storage key for state persistence
+STORAGE_KEY = f"{DOMAIN}.state"
 
 
 class AprilaireDataUpdateCoordinator(DataUpdateCoordinator):
@@ -77,6 +83,9 @@ class AprilaireDataUpdateCoordinator(DataUpdateCoordinator):
         self._connection_state = False
         self._cos_message_queue = asyncio.Queue()
         self._cos_processor_task = None
+        self._store = Store(hass, STORAGE_VERSION, STORAGE_KEY)
+        self._cached_state = None
+        self._state_loaded = False
         
         # Start with fallback interval until COS is verified
         current_update_interval = timedelta(seconds=fallback_scan_interval)
@@ -91,6 +100,56 @@ class AprilaireDataUpdateCoordinator(DataUpdateCoordinator):
         # Initialize device data
         for device_id, device in devices.items():
             self._device_data[device_id] = {"available": device.available}
+
+        # Load stored state
+        self.hass.async_create_task(self._async_load_stored_state())
+
+    async def _async_load_stored_state(self) -> None:
+        """Load stored state from disk."""
+        try:
+            stored_state = await self._store.async_load()
+            if stored_state:
+                _LOGGER.debug("Loaded stored state: %s devices", 
+                            len(stored_state.get("devices", {})))
+                self._cached_state = stored_state
+                self._state_loaded = True
+                
+                # Populate device data with cached state
+                devices_data = stored_state.get("devices", {})
+                for device_id, state in devices_data.items():
+                    if device_id not in self._device_data:
+                        self._device_data[device_id] = state
+                        self._device_data[device_id]["from_cache"] = True
+                
+                # Update listeners to reflect cached state immediately
+                self.async_update_listeners()
+            else:
+                _LOGGER.debug("No stored state found")
+        except Exception as ex:
+            _LOGGER.error("Error loading stored state: %s", ex)
+
+    async def _async_save_state(self) -> None:
+        """Save current state to storage."""
+        try:
+            # Prepare state data
+            state_data = {
+                "last_updated": dt_util.utcnow().isoformat(),
+                "devices": {},
+            }
+            
+            # Add device data
+            for device_id, data in self._device_data.items():
+                # Don't store the "from_cache" marker
+                device_data = {k: v for k, v in data.items() if k != "from_cache"}
+                if device_data:
+                    state_data["devices"][device_id] = device_data
+            
+            # Save to disk
+            await self._store.async_save(state_data)
+            _LOGGER.debug("Saved state to disk for %d devices", 
+                        len(state_data["devices"]))
+        except Exception as ex:
+            _LOGGER.error("Error saving state: %s", ex)
 
     async def async_setup(self) -> None:
         """Set up the coordinator."""
@@ -149,6 +208,30 @@ class AprilaireDataUpdateCoordinator(DataUpdateCoordinator):
             
             self.async_update_listeners()
 
+    async def _async_apply_state_to_device(self, device_id: str, state_data: Dict[str, Any]) -> None:
+        """Apply stored state to a device.
+        
+        This is called when a device is initialized to apply stored state
+        from a previous run.
+        
+        Args:
+            device_id: The device ID
+            state_data: Stored state data for this device
+        """
+        if device_id not in self.devices:
+            _LOGGER.debug("Cannot apply state to device %s - not found", device_id)
+            return
+            
+        device = self.devices[device_id]
+        
+        # Apply state properties
+        for key, value in state_data.items():
+            if key != "from_cache" and key != "available":
+                if hasattr(device, f"_state"):
+                    device._state[key] = value
+                    
+        _LOGGER.debug("Applied stored state to device %s", device_id)
+
     async def _process_cos_message(self, message: str) -> None:
         """Process a COS message and update device state."""
         _LOGGER.debug("Processing COS message: %s", message)
@@ -184,6 +267,13 @@ class AprilaireDataUpdateCoordinator(DataUpdateCoordinator):
                     # Use the device's method to process the COS message
                     device.process_cos_message(command, value)
                     self._device_data[device_id]["available"] = True
+                    
+                    # Remove the "from_cache" flag if present
+                    if "from_cache" in self._device_data[device_id]:
+                        del self._device_data[device_id]["from_cache"]
+                    
+                    # Schedule a state save
+                    self.hass.async_create_task(self._async_save_state())
                     
                     # Notify listeners
                     self.async_update_listeners()
@@ -254,12 +344,23 @@ class AprilaireDataUpdateCoordinator(DataUpdateCoordinator):
                 try:
                     # Poll device state
                     await device.async_update()
-                    self._device_data[str(device_id)] = device.get_state()
+                    device_state = device.get_state()
+                    
+                    # Store device state in our data
+                    self._device_data[str(device_id)] = device_state
                     self._device_data[str(device_id)]["available"] = device.available
+                    
+                    # Remove the "from_cache" flag if present
+                    if "from_cache" in self._device_data[str(device_id)]:
+                        del self._device_data[str(device_id)]["from_cache"]
+                    
                 except Exception as ex:  # pylint: disable=broad-except
                     _LOGGER.error("Error updating device %s: %s", device_id, ex)
                     if str(device_id) in self._device_data:
                         self._device_data[str(device_id)]["available"] = False
+            
+            # Save state after updates
+            await self._async_save_state()
             
             return self._device_data
             
@@ -272,6 +373,8 @@ class AprilaireDataUpdateCoordinator(DataUpdateCoordinator):
         device = self.devices.get(int(device_id))
         if device:
             await device.async_set_temperature(temperature, "HEAT")
+            # Save state after setting temperature
+            await self._async_save_state()
         else:
             _LOGGER.error("Device not found: %s", device_id)
 
@@ -280,6 +383,8 @@ class AprilaireDataUpdateCoordinator(DataUpdateCoordinator):
         device = self.devices.get(int(device_id))
         if device:
             await device.async_set_temperature(temperature, "COOL")
+            # Save state after setting temperature
+            await self._async_save_state()
         else:
             _LOGGER.error("Device not found: %s", device_id)
 
@@ -288,6 +393,8 @@ class AprilaireDataUpdateCoordinator(DataUpdateCoordinator):
         device = self.devices.get(int(device_id))
         if device:
             await device.async_set_hvac_mode(mode)
+            # Save state after setting mode
+            await self._async_save_state()
         else:
             _LOGGER.error("Device not found: %s", device_id)
 
@@ -296,11 +403,16 @@ class AprilaireDataUpdateCoordinator(DataUpdateCoordinator):
         device = self.devices.get(int(device_id))
         if device:
             await device.async_set_fan_mode(mode)
+            # Save state after setting fan mode
+            await self._async_save_state()
         else:
             _LOGGER.error("Device not found: %s", device_id)
 
     async def async_shutdown(self) -> None:
         """Shut down the coordinator."""
+        # Save final state
+        await self._async_save_state()
+        
         # Cancel the COS processor task
         if self._cos_processor_task is not None:
             self._cos_processor_task.cancel()
@@ -308,4 +420,4 @@ class AprilaireDataUpdateCoordinator(DataUpdateCoordinator):
                 await self._cos_processor_task
             except asyncio.CancelledError:
                 pass
-
+                
