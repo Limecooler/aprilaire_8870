@@ -25,6 +25,20 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     hass.data.setdefault(DOMAIN, {})
     return True
 
+async def async_register_services(hass: HomeAssistant) -> None:
+    """Register services after initialization is complete."""
+    _LOGGER.debug("Registering services now that initialization is complete")
+    
+    # Import services here to avoid circular imports
+    from .services import async_setup_services
+    
+    try:
+        await async_setup_services(hass)
+        _LOGGER.debug("Successfully registered services after initialization")
+    except Exception as ex:
+        _LOGGER.error("Error setting up services after initialization: %s", ex)
+        _LOGGER.error("Traceback: %s", traceback.format_exc())
+
 async def async_initialize_devices_background(
     hass: HomeAssistant, 
     entry: ConfigEntry, 
@@ -34,6 +48,17 @@ async def async_initialize_devices_background(
 ) -> None:
     """Initialize devices in the background after config is complete."""
     _LOGGER.debug("Starting background initialization of %d thermostats", len(discovered_addresses))
+    
+    # Verify connection is still active
+    connection = coordinator.connection
+    if not connection or not connection.is_connected():
+        _LOGGER.error("Connection not available or not connected at start of background initialization")
+        # Try to reconnect if disconnected
+        if connection:
+            _LOGGER.debug("Attempting to reconnect...")
+            await connection.async_reconnect_with_backoff()
+            if not connection.is_connected():
+                _LOGGER.error("Reconnection failed, proceeding with limited functionality")
     
     # Dictionary to store initialized devices
     initialized_devices = {}
@@ -114,7 +139,10 @@ async def async_initialize_devices_background(
         
         _LOGGER.info("Background initialization complete for %d thermostats", len(initialized_devices))
         
-        # After all devices are initialized, set up COS functionality in background
+        # Register services now that initialization is complete
+        await async_register_services(hass)
+        
+        # After all devices are initialized and services registered, set up COS functionality in background
         _LOGGER.debug("Scheduling COS functionality setup")
         try:
             hass.async_create_task(async_setup_cos_background(hass, entry, initialized_devices))
@@ -125,6 +153,9 @@ async def async_initialize_devices_background(
     except Exception as ex:
         _LOGGER.exception("Critical error during background initialization: %s", ex)
         # Even if there's a critical error, don't crash the whole integration
+        
+        # Try to register services even if there was an error with device initialization
+        await async_register_services(hass)
 
 async def async_setup_cos_background(
     hass: HomeAssistant, 
@@ -161,9 +192,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     _LOGGER.debug("Setting up Aprilaire 8870 integration with entry: %s", entry.entry_id)
     
     hass.data.setdefault(DOMAIN, {})
-    
-    # Import services here to avoid circular imports
-    from .services import async_setup_services
     
     # Create connection based on config entry
     connection = None
@@ -207,6 +235,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         
         # Add delay after starting read loop
         await asyncio.sleep(1.0)
+
+        # Verify connection is still active after starting read loop
+        if not connection.is_connected():
+            _LOGGER.error("Connection lost after starting read loop")
+            raise ConfigEntryNotReady("Connection lost after starting read loop")
         
         _LOGGER.debug("Getting discovered thermostats from entry config")
         # Get discovered thermostats from entry config
@@ -259,17 +292,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             "devices": {},  # Will be populated during background setup
             "discovered_addresses": discovered_addresses,
         }
-        
-        # Set up services
-        _LOGGER.debug("Setting up integration services")
-        try:
-            await async_setup_services(hass)
-            _LOGGER.debug("Successfully set up integration services")
-        except Exception as service_ex:
-            _LOGGER.error("Error setting up services: %s", service_ex)
-            _LOGGER.error("Traceback: %s", traceback.format_exc())
-            # Make this a fatal error since service setup is critical
-            raise ConfigEntryNotReady(f"Failed to set up services: {service_ex}") from service_ex
         
         # Set up platforms first with minimal info
         _LOGGER.debug("Setting up platform entities")

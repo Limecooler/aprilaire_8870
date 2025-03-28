@@ -265,3 +265,5 @@ HA_TO_APRILAIRE_FAN_MODE = {
     "circulate": "CIRC",
 }
 
+# Event signals
+SIGNAL_CONNECTION_STATE_CHANGED: Final = f"{DOMAIN}_connection_state_changed"

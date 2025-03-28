@@ -10,6 +10,7 @@ from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 from homeassistant.helpers.storage import Store
 from homeassistant.util import dt as dt_util
+from homeassistant.helpers.dispatcher import async_dispatcher_connect
 
 from .const import (
     DOMAIN,
@@ -23,6 +24,7 @@ from .const import (
     COS_FLAG_FAN,
     COS_FLAG_ALARMS,
     COS_FLAG_ERRORS,
+    SIGNAL_CONNECTION_STATE_CHANGED,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -101,6 +103,19 @@ class AprilaireDataUpdateCoordinator(DataUpdateCoordinator):
         self._cached_state = None
         self._state_loaded = False
 
+        # Register for connection state change events
+        self._connection_state_unsub = async_dispatcher_connect(
+            hass, SIGNAL_CONNECTION_STATE_CHANGED, self._handle_connection_state_change
+        )
+
+        # Explicitly register callback with the connection
+        if connection is not None:
+            _LOGGER.debug("Registering connection callback with the connection object")
+            connection.register_connection_callback(self._connection_state_changed)
+            # Initialize connection state from current connection status
+            self._connection_state = connection.is_connected()
+            _LOGGER.debug("Initial connection state from connection object: %s", self._connection_state)
+
     async def _async_load_stored_state(self) -> None:
         """Load stored state from disk."""
         try:
@@ -166,6 +181,49 @@ class AprilaireDataUpdateCoordinator(DataUpdateCoordinator):
         
         # Set up COS message listener
         self.connection.register_message_callback(self._handle_cos_message)
+    
+    @callback
+    def _handle_connection_state_change(self, config, state: str) -> None:
+        """Handle connection state changes from dispatcher."""
+        _LOGGER.debug("Received connection state change from dispatcher: %s", state)
+        is_connected = (state == "connected")
+        self._connection_state_changed(is_connected)
+
+    @callback
+    def _connection_state_changed(self, connected: bool) -> None:
+        """Handle connection state changes."""
+        _LOGGER.debug("Connection state change callback: %s (current state: %s)", 
+                    connected, self._connection_state)
+        
+        if self._connection_state == connected:
+            _LOGGER.debug("Connection state unchanged, ignoring")
+            return
+            
+        _LOGGER.info("Connection state changed from %s to %s", 
+                self._connection_state, connected)
+        self._connection_state = connected
+        
+        if connected:
+            # Connection established, schedule an immediate update
+            _LOGGER.debug("Connection established, requesting immediate update")
+            self.async_request_refresh()
+        else:
+            # Connection lost, mark devices as unavailable
+            _LOGGER.debug("Connection lost, marking devices as unavailable")
+            
+            # Initialize device data if needed
+            if self._device_data is None:
+                self._device_data = {}
+            if self.data is None:
+                self.data = {}
+                
+            for device_id in self._device_data:
+                self._device_data[device_id]["available"] = False
+                # Also update main data structure
+                if device_id in self.data:
+                    self.data[device_id]["available"] = False
+            
+            self.async_update_listeners()
 
     async def _process_cos_messages(self) -> None:
         """Process COS messages from the queue."""
@@ -364,6 +422,12 @@ class AprilaireDataUpdateCoordinator(DataUpdateCoordinator):
             _LOGGER.error("No connection to Aprilaire network")
             raise UpdateFailed("No connection to Aprilaire network")
             
+        # Check if connection object agrees with our state
+        if self.connection and not self.connection.is_connected():
+            _LOGGER.warning("Connection state mismatch! Coordinator thinks connected but connection reports disconnected")
+            self._connection_state = False
+            raise UpdateFailed("Connection state mismatch")
+            
         try:
             # Check if we need to verify COS functionality
             if (
@@ -512,6 +576,10 @@ class AprilaireDataUpdateCoordinator(DataUpdateCoordinator):
 
     async def async_shutdown(self) -> None:
         """Shut down the coordinator."""
+        # Unsubscribe from dispatcher connections
+        if hasattr(self, "_connection_state_unsub") and self._connection_state_unsub:
+            self._connection_state_unsub()
+            
         # Save final state
         await self._async_save_state()
         

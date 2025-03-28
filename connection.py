@@ -74,19 +74,23 @@ class AprilaireConnectionBase(ABC):
         self._state = value
         
         if self._connection_changed_callback is not None:
+            _LOGGER.debug("Calling connection state change callback with state: %s", value)
             self._connection_changed_callback(value)
             
         # Notify using Home Assistant dispatcher
+        _LOGGER.debug("Dispatching connection state change: %s", value)
         async_dispatcher_send(
             self.hass, SIGNAL_CONNECTION_STATE_CHANGED, self.config, value
         )
         
     def register_message_callback(self, callback: Callable[[str], None]) -> None:
         """Register a callback for received messages."""
+        _LOGGER.debug("Registering message callback")
         self._message_callback = callback
         
     def register_connection_callback(self, callback: Callable[[str], None]) -> None:
         """Register a callback for connection state changes."""
+        _LOGGER.debug("Registering connection state callback")
         self._connection_changed_callback = callback
         
     def is_connected(self) -> bool:
