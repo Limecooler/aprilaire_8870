@@ -23,13 +23,12 @@ async def async_setup_entry(
 ) -> None:
     """Set up Aprilaire switch entities based on a config entry."""
     coordinator = hass.data[DOMAIN][config_entry.entry_id]["coordinator"]
-    devices = hass.data[DOMAIN][config_entry.entry_id]["devices"]
-    discovered_addresses = hass.data[DOMAIN][config_entry.entry_id]["discovered_addresses"]
+    devices = hass.data[DOMAIN][config_entry.entry_id].get("devices", {})
+    discovered_addresses = hass.data[DOMAIN][config_entry.entry_id].get("discovered_addresses", [])
     
     entities = []
     
     # Create entities for both initialized devices and discovered addresses
-    # that haven't been fully initialized yet
     all_device_ids = set(devices.keys()) | set(discovered_addresses)
     
     for device_id in all_device_ids:
@@ -42,31 +41,35 @@ async def async_setup_entry(
             
             # Network override switch (HOLD functionality)
             # Only add if NETLK = 0 (network override enabled)
-            if device.network_override_enabled:
+            if hasattr(device, "network_override_enabled") and device.network_override_enabled:
+                entities.append(AprilaireNetworkOverrideSwitch(coordinator, device))
+            else:
+                # Add anyway, since we don't know yet if it's supported
                 entities.append(AprilaireNetworkOverrideSwitch(coordinator, device))
             
             # Constant backlight switch
             entities.append(AprilaireBacklightSwitch(coordinator, device))
         else:
             # Device not fully initialized yet, use minimal placeholder
-            # We need to create a minimal device object with just enough info
-            # for the entity to function until the real device is initialized
             from .device import AprilaireDevice
             
-            # Create minimal device
-            minimal_device = AprilaireDevice(
-                address=device_id,
-                coordinator=coordinator,
-                protocol=None  # Will be set later during initialization
-            )
-            minimal_device.name = f"Aprilaire {device_id}"
-            minimal_device.unique_id = f"{DOMAIN}_{device_id}"
-            minimal_device.network_override_enabled = True  # Assume enabled until we know otherwise
-            
-            # Create entities with minimal device
-            entities.append(AprilaireFanOverrideSwitch(coordinator, minimal_device))
-            entities.append(AprilaireNetworkOverrideSwitch(coordinator, minimal_device))
-            entities.append(AprilaireBacklightSwitch(coordinator, minimal_device))
+            try:
+                # Create minimal device
+                minimal_device = AprilaireDevice(
+                    address=device_id,
+                    coordinator=coordinator,
+                    protocol=None  # Will be set later during initialization
+                )
+                minimal_device.name = f"Aprilaire {device_id}"
+                minimal_device.unique_id = f"{DOMAIN}_{device_id}"
+                minimal_device.network_override_enabled = True  # Assume enabled until we know otherwise
+                
+                # Create entities with minimal device
+                entities.append(AprilaireFanOverrideSwitch(coordinator, minimal_device))
+                entities.append(AprilaireNetworkOverrideSwitch(coordinator, minimal_device))
+                entities.append(AprilaireBacklightSwitch(coordinator, minimal_device))
+            except Exception as ex:
+                _LOGGER.error("Error creating minimal device for switch entities: %s", ex)
 
     async_add_entities(entities)
 
@@ -85,9 +88,9 @@ class AprilaireSwitch(CoordinatorEntity, SwitchEntity):
         """Initialize the switch."""
         super().__init__(coordinator)
         self._device = device
-        self._device_id = str(device.address)
-        self._attr_name = f"{device.name} {name_suffix}"
-        self._attr_unique_id = f"{device.unique_id}_{unique_id_suffix}"
+        self._device_id = str(device.address) if device else ""
+        self._attr_name = f"{device.name if device else f'Aprilaire {self._device_id}'} {name_suffix}"
+        self._attr_unique_id = f"{device.unique_id if device else f'{DOMAIN}_{self._device_id}'}__{unique_id_suffix}"
         self._attr_entity_category = entity_category
         self._attr_icon = icon
         self._attr_has_entity_name = True
@@ -95,6 +98,16 @@ class AprilaireSwitch(CoordinatorEntity, SwitchEntity):
     @property
     def device_info(self) -> Dict[str, Any]:
         """Return device info for this device."""
+        # Add null check to avoid None errors
+        if not self._device:
+            return {
+                "identifiers": {(DOMAIN, self._device_id)},
+                "name": f"Aprilaire {self._device_id}",
+                "manufacturer": "Aprilaire",
+                "model": "8870",
+            }
+        
+        # Return the device info if device is available
         return self._device.device_info
         
     @property
