@@ -445,31 +445,46 @@ class SerialServerConnection(AprilaireConnectionBase):
             self._writer.write(command)
             await self._writer.drain()
 
+            # Get device ID from command if it's a device-specific command
+            device_id = None
+            if command.startswith("SN"):
+                # Extract numeric device ID from command (SNx)
+                parts = command.strip().split(" ")[0]
+                if len(parts) > 2:  # SN followed by numbers
+                    try:
+                        device_id = int(parts[2:])
+                    except ValueError:
+                        device_id = None
+
             # Wait for response with timeout
             start_time = time.time()
             while (time.time() - start_time) < timeout:
                 # Check for responses
                 if self._received_messages:
-                    # Look for a response matching this command
-                    device_prefix = None
-                    if command.startswith("SN"):
-                        # Extract device ID from command (SNx)
-                        parts = command.strip().split(" ")[0]
-                        device_prefix = parts
-
+                    # Process all received messages
                     for msg in self._received_messages:
-                        # If we have a device prefix, check if response starts with it
-                        if device_prefix and msg.startswith(device_prefix):
-                            # Also check if the command is in the response
-                            cmd_parts = command.strip().split(" ")
-                            if len(cmd_parts) > 1 and cmd_parts[1] in msg:
-                                self._received_messages.remove(msg)
-                                return msg
+                        # If we have a device ID, look for responses from that device
+                        if device_id is not None:
+                            # Check if the response starts with SNx where x is the device ID
+                            # Using regex to extract device ID from response
+                            import re
+                            match = re.match(r'^SN(\d+)', msg)
+                            if match and int(match.group(1)) == device_id:
+                                # Extract command from original command
+                                cmd_parts = command.strip().split(" ")
+                                if len(cmd_parts) > 1:
+                                    cmd = cmd_parts[1].split("=")[0].rstrip("?")
+                                    # Check if response contains this command
+                                    if cmd in msg:
+                                        self._received_messages.remove(msg)
+                                        return msg
 
-                    # If no exact match found but we have responses for this device
-                    if device_prefix:
-                        for msg in self._received_messages:
-                            if msg.startswith(device_prefix):
+                    # If we get here, no exact match was found
+                    # Use first available response for this device as fallback
+                    for msg in self._received_messages:
+                        if device_id is not None:
+                            match = re.match(r'^SN(\d+)', msg)
+                            if match and int(match.group(1)) == device_id:
                                 self._received_messages.remove(msg)
                                 return msg
 
