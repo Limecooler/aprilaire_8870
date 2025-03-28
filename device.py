@@ -494,45 +494,45 @@ class AprilaireDevice:
             return False
 
     def _find_matching_response(self, responses: List[str], command: str) -> Optional[str]:
-    """Find the response that matches the command with improved pattern matching."""
-    if not responses:
-        return None
-        
-    # Extract command parts
-    cmd_parts = command.strip().split(" ")
-    if len(cmd_parts) < 2:
-        return None
-        
-    # Extract device ID from command (e.g., "SN1" -> "1")
-    device_part = cmd_parts[0]  # e.g., "SN1"
-    device_id = None
-    if device_part.startswith("SN"):
-        try:
-            device_id = int(device_part[2:])
-        except ValueError:
-            pass
+        """Find the response that matches the command with improved pattern matching."""
+        if not responses:
+            return None
             
-    command_part = cmd_parts[1]  # e.g., "ID?"
-    # Strip the trailing ? for query commands
-    command_name = command_part.rstrip("?")
-    
-    # First, look for exact matches
-    for response in responses:
-        # Match the device ID with regex to handle location names
-        import re
-        device_match = re.match(r'^SN(\d+)', response)
-        if device_match and int(device_match.group(1)) == device_id:
-            # Then check if command is in the response
-            if command_name in response:
+        # Extract command parts
+        cmd_parts = command.strip().split(" ")
+        if len(cmd_parts) < 2:
+            return None
+            
+        # Extract device ID from command (e.g., "SN1" -> "1")
+        device_part = cmd_parts[0]  # e.g., "SN1"
+        device_id = None
+        if device_part.startswith("SN"):
+            try:
+                device_id = int(device_part[2:])
+            except ValueError:
+                pass
+                
+        command_part = cmd_parts[1]  # e.g., "ID?"
+        # Strip the trailing ? for query commands
+        command_name = command_part.rstrip("?")
+        
+        # First, look for exact matches
+        for response in responses:
+            # Match the device ID with regex to handle location names
+            import re
+            device_match = re.match(r'^SN(\d+)', response)
+            if device_match and int(device_match.group(1)) == device_id:
+                # Then check if command is in the response
+                if command_name in response:
+                    return response
+                    
+        # If no exact match, return first response for this device
+        for response in responses:
+            device_match = re.match(r'^SN(\d+)', response)
+            if device_match and int(device_match.group(1)) == device_id:
                 return response
-                
-    # If no exact match, return first response for this device
-    for response in responses:
-        device_match = re.match(r'^SN(\d+)', response)
-        if device_match and int(device_match.group(1)) == device_id:
-            return response
-                
-    return None
+                    
+        return None
 
     async def _send_command_with_retry(
         self, 
