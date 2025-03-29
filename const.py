@@ -33,9 +33,9 @@ CONN_TYPE_SERIAL_PORT: Final = "serial_port"  # Alias for compatibility
 # Default configuration values
 DEFAULT_PORT: Final = 23
 DEFAULT_BAUDRATE: Final = 9600
-DEFAULT_SCAN_INTERVAL: Final = 300  # 5 minutes
-DEFAULT_UPDATE_INTERVAL: Final = 300  # 5 minutes
-DEFAULT_FALLBACK_SCAN_INTERVAL: Final = 60  # 1 minute
+DEFAULT_SCAN_INTERVAL: Final = 600  # 10 minutes
+DEFAULT_UPDATE_INTERVAL: Final = 600  # 10 minutes
+DEFAULT_FALLBACK_SCAN_INTERVAL: Final = 180  # 3 minutes
 DEFAULT_COS_VERIFICATION_INTERVAL: Final = 1800  # 30 minutes
 DEFAULT_NAME: Final = "Aprilaire 8870 Thermostat"
 

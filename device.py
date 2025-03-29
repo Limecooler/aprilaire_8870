@@ -174,6 +174,29 @@ class AprilaireDevice:
         """Return the device ID (alias for address)."""
         return self.address
 
+    def _extract_device_name_from_response(self, response: str) -> Optional[str]:
+        """Extract device name/location from a response if present.
+        
+        Args:
+            response: Response string from thermostat
+            
+        Returns:
+            Extracted name or None if not found
+        """
+        if not response:
+            return None
+            
+        # Extract location name from response if present
+        # Format is typically SN<address><location> <command>=<value>
+        import re
+        name_match = re.match(r'^SN\d+([A-Za-z0-9 ]+)', response)
+        if name_match and name_match.group(1).strip():
+            location_name = name_match.group(1).strip()
+            if location_name:
+                return location_name
+                
+        return None
+
     def _process_state_response(self, command: str, response: str) -> None:
         """Process a state query response to update internal state."""
         # Extract value from response
