@@ -42,6 +42,10 @@ from .const import (
 
 _LOGGER = logging.getLogger(__name__)
 
+# RS-485 is a single-master half-duplex bus; HA must not run platform updates
+# in parallel or commands will collide on the wire.
+PARALLEL_UPDATES = 1
+
 # Define custom fan mode for circulation since it's not in Home Assistant constants
 FAN_CIRCULATE = "circulate"
 
@@ -54,8 +58,8 @@ async def async_setup_entry(
     coordinator = hass.data[DOMAIN][entry.entry_id]["coordinator"]
     devices = hass.data[DOMAIN][entry.entry_id]["devices"]
     discovered_addresses = hass.data[DOMAIN][entry.entry_id]["discovered_addresses"]
-    
-    entities = []
+
+    entities: list[ClimateEntity] = []
     
     # Create entities for both initialized devices and discovered addresses
     all_device_ids = set(devices.keys()) | set(discovered_addresses)

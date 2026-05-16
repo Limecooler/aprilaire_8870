@@ -1,0 +1,172 @@
+set_text_message:
+  name: Set text message
+  description: Display a message on the thermostat screen (max 31 characters).
+  target:
+    entity:
+      integration: aprilaire_8870
+      domain: climate
+  fields:
+    message:
+      name: Message
+      description: Text to display (truncated to 31 characters).
+      required: true
+      example: "Hello"
+      selector:
+        text:
+    message_type:
+      name: Message type
+      description: Where the message is shown on the thermostat.
+      required: true
+      example: tmpmes
+      selector:
+        select:
+          options:
+            - label: Temporary
+              value: tmpmes
+            - label: Permanent message 1
+              value: pmes1
+            - label: Permanent message 2
+              value: pmes2
+            - label: Permanent message 3
+              value: pmes3
+            - label: Permanent message 4
+              value: pmes4
+
+set_backlight:
+  name: Set backlight
+  description: Control the thermostat backlight.
+  target:
+    entity:
+      integration: aprilaire_8870
+      domain: climate
+  fields:
+    state:
+      name: State
+      description: Turn the backlight on or off.
+      required: false
+      example: true
+      selector:
+        boolean:
+    duration:
+      name: Duration
+      description: How long the backlight stays in this state, in seconds (0–255).
+      required: false
+      example: 30
+      selector:
+        number:
+          min: 0
+          max: 255
+          mode: box
+          unit_of_measurement: s
+
+reset_filter:
+  name: Reset filter
+  description: Reset the thermostat filter timer.
+  target:
+    entity:
+      integration: aprilaire_8870
+      domain: climate
+
+set_lockout:
+  name: Set lockout
+  description: Configure thermostat lockout settings (omit any field to leave it unchanged).
+  target:
+    entity:
+      integration: aprilaire_8870
+      domain: climate
+  fields:
+    fan_lockout:
+      name: Fan lockout
+      description: Lock the fan setting (0 = unlocked, 1 = partial, 2 = full).
+      required: false
+      example: 0
+      selector:
+        number:
+          min: 0
+          max: 2
+          mode: box
+    mode_lockout:
+      name: Mode lockout
+      description: Lock the HVAC mode setting (0 = unlocked, 1 = partial, 2 = full).
+      required: false
+      example: 0
+      selector:
+        number:
+          min: 0
+          max: 2
+          mode: box
+    setpoint_lockout:
+      name: Setpoint lockout
+      description: Lock the setpoint adjustment (0–4).
+      required: false
+      example: 0
+      selector:
+        number:
+          min: 0
+          max: 4
+          mode: box
+    network_lockout:
+      name: Network lockout
+      description: Lock network override (0 = unlocked, 1 = locked).
+      required: false
+      example: 0
+      selector:
+        number:
+          min: 0
+          max: 1
+          mode: box
+    lockout_time:
+      name: Lockout time
+      description: Lockout reset time in minutes (0–255).
+      required: false
+      example: 30
+      selector:
+        number:
+          min: 0
+          max: 255
+          mode: box
+          unit_of_measurement: min
+    lockout_limit:
+      name: Lockout limit
+      description: Maximum number of allowed setpoint changes before lockout (0–20).
+      required: false
+      example: 5
+      selector:
+        number:
+          min: 0
+          max: 20
+          mode: box
+
+configure_cos:
+  name: Configure Change of State (COS) flags
+  description: Set which Change-of-State broadcast flags are enabled on the thermostat.
+  target:
+    entity:
+      integration: aprilaire_8870
+      domain: climate
+  fields:
+    cos_flags:
+      name: COS flags
+      description: List of COS flags to enable.
+      required: true
+      example:
+        - c1
+        - c2
+      selector:
+        select:
+          multiple: true
+          options:
+            - label: HVAC relays (c1)
+              value: c1
+            - label: Temperature/humidity (c2)
+              value: c2
+            - label: Setpoints (c5)
+              value: c5
+            - label: Mode (c7)
+              value: c7
+            - label: Fan (c8)
+              value: c8
+            - label: Alarms (c14)
+              value: c14
+            - label: Errors (c19)
+              value: c19

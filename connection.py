@@ -8,7 +8,7 @@ import time
 import random
 
 import telnetlib3
-import serial_asyncio
+import serial_asyncio_fast as serial_asyncio
 
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
@@ -100,12 +100,10 @@ class AprilaireConnectionBase(ABC):
     @abstractmethod
     async def async_connect(self) -> bool:
         """Establish the connection."""
-        pass
-        
+
     @abstractmethod
     async def async_disconnect(self) -> None:
         """Close the connection."""
-        pass
     
     async def async_reconnect_with_backoff(self) -> bool:
         """Attempt to reconnect with backoff strategy.
@@ -144,7 +142,6 @@ class AprilaireConnectionBase(ABC):
     @abstractmethod
     async def async_send_command(self, command: str) -> Optional[str]:
         """Send a command to the thermostat."""
-        pass
         
     async def async_start_reading(self) -> None:
         """Start the continuous reading task."""
@@ -184,7 +181,6 @@ class AprilaireConnectionBase(ABC):
     @abstractmethod
     async def _async_read_data(self) -> Optional[str]:
         """Read data from the connection."""
-        pass
                    
     async def _async_process_data(self, data: Any) -> None:
         """Process incoming data with improved binary handling."""
@@ -200,7 +196,7 @@ class AprilaireConnectionBase(ABC):
                         data_str += '\r'
                     # Ignore other non-printable bytes
                 data = data_str
-            except UnicodeDecodeError:
+            except UnicodeDecodeError:  # pragma: no cover  (per-byte loop above can't raise)
                 _LOGGER.warning("Unable to decode binary data to ASCII")
                 return
         
@@ -213,7 +209,10 @@ class AprilaireConnectionBase(ABC):
                 return
                 
         self._buffer += data
-        
+        # Cap the buffer so a stuck connection can't grow it unboundedly.
+        if len(self._buffer) > 4096:
+            self._buffer = self._buffer[-4096:]
+
         # Split by carriage return (message delimiter)
         lines = self._buffer.split("\r")
         
@@ -303,7 +302,7 @@ class SerialServerConnection(AprilaireConnectionBase):
         try:
             # First try standard decoding
             return data.decode("ascii", errors="replace")
-        except UnicodeDecodeError:
+        except UnicodeDecodeError:  # pragma: no cover  (errors='replace' never raises)
             # Fall back to manual character filtering
             result = ""
             for byte in data:
@@ -453,42 +452,41 @@ class SerialServerConnection(AprilaireConnectionBase):
                 if len(parts) > 2:  # SN followed by numbers
                     try:
                         device_id = int(parts[2:])
-                    except ValueError:
+                    except ValueError:  # pragma: no cover  (caller always passes SN<digits>)
                         device_id = None
+
+            # Extract the expected command name once (e.g. "CR" from "SN1 CR=NORMAL\r").
+            expected_cmd = None
+            cmd_parts = command.strip().split(" ")
+            if len(cmd_parts) > 1:
+                expected_cmd = cmd_parts[1].split("=")[0].rstrip("?")
+
+            import re
+            device_re = re.compile(r"^SN(\d+)")
 
             # Wait for response with timeout
             start_time = time.time()
             while (time.time() - start_time) < timeout:
-                # Check for responses
                 if self._received_messages:
-                    # Process all received messages
-                    for msg in self._received_messages:
-                        # If we have a device ID, look for responses from that device
-                        if device_id is not None:
-                            # Check if the response starts with SNx where x is the device ID
-                            # Using regex to extract device ID from response
-                            import re
-                            match = re.match(r'^SN(\d+)', msg)
-                            if match and int(match.group(1)) == device_id:
-                                # Extract command from original command
-                                cmd_parts = command.strip().split(" ")
-                                if len(cmd_parts) > 1:
-                                    cmd = cmd_parts[1].split("=")[0].rstrip("?")
-                                    # Check if response contains this command
-                                    if cmd in msg:
-                                        self._received_messages.remove(msg)
-                                        return msg
+                    # Iterate over a snapshot so .remove() inside the loop is safe.
+                    for msg in list(self._received_messages):
+                        if device_id is None:
+                            self._received_messages.remove(msg)
+                            return msg
+                        match = device_re.match(msg)
+                        if not match or int(match.group(1)) != device_id:
+                            continue
+                        if expected_cmd and expected_cmd in msg:
+                            self._received_messages.remove(msg)
+                            return msg
 
-                    # If we get here, no exact match was found
-                    # Use first available response for this device as fallback
-                    for msg in self._received_messages:
-                        if device_id is not None:
-                            match = re.match(r'^SN(\d+)', msg)
-                            if match and int(match.group(1)) == device_id:
-                                self._received_messages.remove(msg)
-                                return msg
+                    # No exact command match — fall back to first response from this device.
+                    for msg in list(self._received_messages):
+                        match = device_re.match(msg)
+                        if match and int(match.group(1)) == device_id:
+                            self._received_messages.remove(msg)
+                            return msg
 
-                # Wait a bit before checking again
                 await asyncio.sleep(0.1)
 
             _LOGGER.warning("No response received for command: %s", command.strip())
@@ -552,7 +550,7 @@ class ComPortConnection(AprilaireConnectionBase):
         try:
             # First try standard decoding
             return data.decode("ascii", errors="replace")
-        except UnicodeDecodeError:
+        except UnicodeDecodeError:  # pragma: no cover  (errors='replace' never raises)
             # Fall back to manual character filtering
             result = ""
             for byte in data:
@@ -649,7 +647,7 @@ class ComPortConnection(AprilaireConnectionBase):
             try:
                 async with async_timeout.timeout(0.1):
                     await self._read_event.wait()
-            except asyncio.TimeoutError:
+            except asyncio.TimeoutError:  # pragma: no cover  (event is set just above)
                 # No data received within timeout, which is normal
                 return None
                 
@@ -696,46 +694,31 @@ class ComPortConnection(AprilaireConnectionBase):
                     await connection.async_connect()
                 return connection
                 
-            # Create new connection
+            # Create new connection. (conn_type was already validated above,
+            # so the only two branches that can reach here are these two.)
             if conn_type == CONN_TYPE_SERIAL_SERVER:
                 connection = SerialServerConnection(self.hass, config)
-            elif conn_type == CONN_TYPE_SERIAL_PORT:
-                connection = ComPortConnection(self.hass, config)
             else:
-                raise ValueError(f"Unsupported connection type: {conn_type}")
-                
-            # Connect
+                connection = ComPortConnection(self.hass, config)
+
             await connection.async_connect()
-            
-            # Store connection
             self._connections[key] = connection
             return connection
-            
+
         async def async_close_connection(self, connection: AprilaireConnectionBase) -> None:
-            """Close a specific connection.
-            
-            Args:
-                connection: The connection to close
-            """
-            # Find the connection in our dictionary
+            """Close a specific connection."""
             for key, stored_connection in list(self._connections.items()):
                 if stored_connection is connection:
                     await connection.async_disconnect()
                     del self._connections[key]
                     return
-                    
+
         async def async_close_all(self) -> None:
             """Close all connections."""
             for key, connection in list(self._connections.items()):
                 await connection.async_disconnect()
                 del self._connections[key]
-                
+
         async def async_shutdown(self) -> None:
             """Shutdown the connection manager."""
             await self.async_close_all()
-
-        def get_received_messages(self) -> List[str]:
-            """Get all received messages and clear the buffer."""
-            messages = self._received_messages.copy()
-            self._received_messages.clear()
-            return messages

@@ -180,9 +180,9 @@ class AprilaireProtocol:
             try:
                 device_id = int(device_id_str)
                 return device_id, command, value
-            except ValueError:
+            except ValueError:  # pragma: no cover  (regex enforces \d+, int() can't fail)
                 raise InvalidResponseError(f"Invalid device ID in response: {response}")
-                
+
         # Try simple response pattern (like SN1 or SN1NAME)
         match = self._simple_response_pattern.match(response)
         if match:
@@ -190,7 +190,7 @@ class AprilaireProtocol:
             try:
                 device_id = int(device_id_str)
                 return device_id, "NAME", name if name else ""
-            except ValueError:
+            except ValueError:  # pragma: no cover  (regex enforces \d+, int() can't fail)
                 raise InvalidResponseError(f"Invalid device ID in response: {response}")
                 
         raise InvalidResponseError(f"Invalid response format: {response}")
@@ -248,7 +248,7 @@ class AprilaireProtocol:
                         "cos_type": cos_type,
                         "value": value,
                     }
-                except ValueError:
+                except ValueError:  # pragma: no cover  (regex enforces \d+)
                     raise InvalidResponseError(f"Invalid device ID in COS message: {message}")
                     
         raise InvalidResponseError(f"Unknown COS message format: {message}")
@@ -351,141 +351,52 @@ class AprilaireProtocol:
     async def execute_assignment_command(
         self, device_id: int, command: str, value: str, timeout: Optional[float] = None
     ) -> Optional[str]:
-        """Execute an assignment command and return the response.
-        
-        Args:
-            device_id: The device to send the command to
-            command: The command to execute
-            value: The value to assign
-            timeout: Optional timeout override
-            
-        Returns:
-            The command response value or None if failed
-            
-        Raises:
-            CommandError: If the command fails
+        """Execute an assignment command and return the raw response line.
+
+        Mirrors execute_query_command: prefers async_send_command_with_response
+        when the connection supports it, otherwise sends and polls
+        get_received_messages(). Always serialized via _command_lock so
+        commands don't interleave on the RS-485 bus.
+
+        Returns the matched response line (e.g. "SN1 CR=NORMAL") or None.
         """
-        if not hasattr(self, "_connection") or self._connection is None:
+        if not self._connection:
             _LOGGER.error("No connection available for executing command")
-            return None
-            
-        try:
-            # Create formatted command
-            formatted_command = f"SN{device_id} {command}={value}"
-            
-            # Send the command and get the response
-            _LOGGER.debug("Sending assignment command: %s", formatted_command)
-            response = await self._connection.async_send_command(formatted_command)
-            _LOGGER.debug("Received response for assignment command: %r", response)
-            
-            if not response:
-                _LOGGER.error("No response received for command: %s", formatted_command)
-                return None
-                
-            # Parse the response to extract the value
-            # Expected format: "SN{device_id} {command}={value}"
-            if "=" in response:
-                parts = response.split("=", 1)
-                if len(parts) > 1:
-                    value_part = parts[1].strip()
-                    _LOGGER.debug("Extracted value from response: %r", value_part)
-                    return response
-                
-            return response.strip()
-            
-        except Exception as ex:
-            _LOGGER.exception("Error executing assignment command %s=%s for device %s: %s", 
-                            command, value, device_id, ex)
             return None
 
-    async def execute_query_command(
-        self, device_id: int, command: str, timeout: Optional[float] = None
-    ) -> Optional[str]:
-        """Execute a query command and return the response.
-        
-        Args:
-            device_id: The device to send the command to
-            command: The command to execute
-            timeout: Optional timeout override
-            
-        Returns:
-            The command response value or None if failed
-            
-        Raises:
-            CommandError: If the command fails
-        """
-        if not hasattr(self, "_connection") or self._connection is None:
-            _LOGGER.error("No connection available for executing command")
-            return None
-            
-        try:
-            # Create formatted command
-            formatted_command = f"SN{device_id} {command}?"
-            
-            # Send the command and get the response
-            response = await self._connection.async_send_command(formatted_command)
-            
-            if not response:
+        async with self._command_lock:
+            try:
+                formatted_command = f"SN{device_id} {command}={value}"
+
+                if hasattr(self._connection, "async_send_command_with_response"):
+                    return await self._connection.async_send_command_with_response(
+                        formatted_command,
+                        timeout=timeout or COMMAND_TIMEOUT,
+                    )
+
+                if hasattr(self._connection, "get_received_messages"):
+                    self._connection.get_received_messages()
+
+                _LOGGER.debug("Sending assignment command: %s", formatted_command)
+                await self._connection.async_send_command(formatted_command)
+
+                await asyncio.sleep(timeout or COMMAND_TIMEOUT)
+
+                if not hasattr(self._connection, "get_received_messages"):
+                    return None
+
+                device_prefix = f"SN{device_id}"
+                for resp in self._connection.get_received_messages():
+                    if resp.startswith(device_prefix) and command in resp:
+                        return resp
                 return None
-                
-            # Parse the response to extract the value
-            # Expected format: "SN{device_id} {command}={value}"
-            if "=" in response:
-                parts = response.split("=", 1)
-                if len(parts) > 1:
-                    return parts[1].strip()
-                
-            return response.strip()
-            
-        except Exception as ex:
-            _LOGGER.error("Error executing query command %s for device %s: %s", 
-                         command, device_id, ex)
-            return None
-        
-    async def execute_assignment_command(
-        self, device_id: int, command: str, value: str, timeout: Optional[float] = None
-    ) -> Optional[str]:
-        """Execute an assignment command and return the response.
-        
-        Args:
-            device_id: The device to send the command to
-            command: The command to execute
-            value: The value to assign
-            timeout: Optional timeout override
-            
-        Returns:
-            The command response value or None if failed
-            
-        Raises:
-            CommandError: If the command fails
-        """
-        if not hasattr(self, "_connection") or self._connection is None:
-            _LOGGER.error("No connection available for executing command")
-            return None
-            
-        try:
-            # Create formatted command
-            formatted_command = f"SN{device_id} {command}={value}"
-            
-            # Send the command and get the response
-            response = await self._connection.async_send_command(formatted_command)
-            
-            if not response:
+
+            except Exception as ex:
+                _LOGGER.error(
+                    "Error executing assignment command %s=%s for device %s: %s",
+                    command, value, device_id, ex,
+                )
                 return None
-                
-            # Parse the response to extract the value
-            # Expected format: "SN{device_id} {command}={value}"
-            if "=" in response:
-                parts = response.split("=", 1)
-                if len(parts) > 1:
-                    return parts[1].strip()
-                
-            return response.strip()
-            
-        except Exception as ex:
-            _LOGGER.error("Error executing assignment command %s=%s for device %s: %s", 
-                         command, value, device_id, ex)
-            return None
 
 class CommandQueue:
     """Manages queuing and execution of commands."""
@@ -652,44 +563,5 @@ class CommandQueue:
                 
         except InvalidResponseError:
             _LOGGER.debug("Response does not match current command: %s", response)
-            
+
         return False
-
-    def execute_query_command(self, device_id, command, timeout=None):
-        """Execute a query command and return the response.
-
-        Args:
-            device_id: The device to send the command to
-            command: The command to execute
-            timeout: Optional timeout override
-
-        Returns:
-            The command response
-
-        Raises:
-            CommandError: If the command fails
-        """
-        formatted_command = self.format_command(device_id, command)
-        # This method returns the command result directly
-        # In a real implementation, you'd send the command and wait for a response
-        return formatted_command
-
-    def execute_assignment_command(self, device_id, command, value, timeout=None):
-        """Execute an assignment command and return the response.
-
-        Args:
-            device_id: The device to send the command to
-            command: The command to execute
-            value: The value to assign
-            timeout: Optional timeout override
-
-        Returns:
-            The command response
-
-        Raises:
-            CommandError: If the command fails
-        """
-        formatted_command = self.format_command(device_id, command, value)
-        # This method returns the command result directly
-        # In a real implementation, you'd send the command and wait for a response
-        return formatted_command

@@ -1,0 +1,11 @@
+.claude/settings.local.json
+.mcp.json
+__pycache__/
+*.py[cod]
+.DS_Store
+.venv/
+.coverage
+htmlcov/
+.pytest_cache/
+.mypy_cache/
+*.egg-info/

@@ -1,44 +1,82 @@
 {
   "config": {
-    "flow_title": "Aprilaire 8870 Thermostat",
     "step": {
       "user": {
+        "title": "Select Connection Type",
+        "description": "Choose how to connect to your Aprilaire 8870 thermostats."
+      },
+      "connection_type": {
+        "title": "Connection Method",
+        "description": "Select how your RS-485 thermostat network is connected to Home Assistant.",
         "data": {
-          "connection_type": {
-            "serial_server": "Network Serial Server (IP address)",
-            "serial_port": "Direct Serial Connection (USB/COM port)"
-          }
+          "type": "Connection Type"
+        }
+      },
+      "serial_server": {
+        "title": "Serial Server Configuration",
+        "description": "Enter the details for your network-connected serial server.",
+        "data": {
+          "host": "IP Address or Hostname",
+          "port": "Port"
         }
       },
       "serial_port": {
+        "title": "Serial Port Configuration",
+        "description": "Enter the details for your direct serial connection.",
         "data": {
-          "baud_rate": {
-            "9600": "9600 bps",
-            "19200": "19200 bps"
-          }
+          "device": "Serial Port Name",
+          "baud_rate": "Baud Rate"
         }
       },
-      "cos_config": {
+      "discovery": {
+        "title": "Discovering Thermostats",
+        "description": "Searching for Aprilaire 8870 thermostats on the network..."
+      }
+    },
+    "progress": {
+      "discovering": "Searching for thermostats..."
+    },
+    "abort": {
+      "already_configured": "This connection is already configured",
+      "no_devices_found": "No thermostats found on the network",
+      "not_aprilaire_8870": "The device found is not an Aprilaire 8870 thermostat"
+    },
+    "error": {
+      "cannot_connect": "Failed to connect, please verify your connection details",
+      "invalid_host": "Invalid IP address or hostname",
+      "invalid_port": "Port number must be between 1 and 65535",
+      "invalid_serial_port": "Serial port not found or inaccessible",
+      "unknown": "Unexpected error occurred"
+    },
+    "create_entry": {
+      "default": "Successfully connected to {thermostats_count} Aprilaire thermostats"
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Aprilaire Options",
+        "description": "Tune runtime behavior of the integration.",
         "data": {
-          "cos_flags": {
-            "c1": "HVAC relay status changes",
-            "c2": "Temperature/humidity changes",
-            "c5": "Setpoint changes",
-            "c7": "Mode changes",
-            "c8": "Fan state changes",
-            "c14": "Alarm status changes",
-            "c19": "Error status changes"
-          }
+          "temperature_unit": "Temperature Unit",
+          "command_retry_count": "Command Retry Count",
+          "connection_backoff_max": "Maximum Reconnect Backoff (seconds)",
+          "debug_mode": "Enable Debug Mode"
         }
-      },
-      "advanced": {
-        "data": {
-          "temperature_unit": {
-            "auto": "Use Home Assistant default",
-            "C": "Celsius (°C)",
-            "F": "Fahrenheit (°F)"
-          }
-        }
+      }
+    }
+  },
+  "selector": {
+    "connection_type": {
+      "options": {
+        "serial_server": "Network Serial Server (IP address)",
+        "serial_port": "Direct Serial Connection (USB/COM port)"
+      }
+    },
+    "baud_rate": {
+      "options": {
+        "9600": "9600 bps",
+        "19200": "19200 bps"
       }
     }
   },
@@ -47,23 +85,29 @@
       "aprilaire_climate": {
         "state_attributes": {
           "fan_mode": {
-            "auto": "Auto",
-            "on": "On",
-            "circ": "Circulate"
+            "state": {
+              "auto": "Auto",
+              "on": "On",
+              "circ": "Circulate"
+            }
           },
           "hvac_mode": {
-            "off": "Off",
-            "heat": "Heat",
-            "cool": "Cool",
-            "auto": "Auto",
-            "heat_cool": "Heat/Cool",
-            "emht": "Emergency Heat"
+            "state": {
+              "off": "Off",
+              "heat": "Heat",
+              "cool": "Cool",
+              "auto": "Auto",
+              "heat_cool": "Heat/Cool",
+              "emht": "Emergency Heat"
+            }
           },
           "preset_mode": {
-            "none": "None",
-            "temp": "Temporary",
-            "perm": "Permanent",
-            "vac": "Vacation"
+            "state": {
+              "none": "None",
+              "temp": "Temporary",
+              "perm": "Permanent",
+              "vac": "Vacation"
+            }
           }
         }
       }
@@ -118,22 +162,11 @@
       "fields": {
         "message": {
           "name": "Message",
-          "description": "Text message to display (max 31 characters)"
+          "description": "Text message to display (max 31 characters)."
         },
         "message_type": {
           "name": "Message Type",
-          "description": "Type of message to set (permanent or temporary)",
-          "selector": {
-            "select": {
-              "options": {
-                "pmes1": "Permanent Message 1",
-                "pmes2": "Permanent Message 2",
-                "pmes3": "Permanent Message 3",
-                "pmes4": "Permanent Message 4",
-                "tmpmes": "Temporary Message"
-              }
-            }
-          }
+          "description": "Type of message to set (permanent or temporary)."
         }
       }
     },
@@ -141,56 +174,47 @@
       "name": "Set Backlight",
       "description": "Control the thermostat's backlight.",
       "fields": {
-        "level": {
-          "name": "Level",
-          "description": "Backlight brightness level (0-100)"
+        "state": {
+          "name": "State",
+          "description": "Turn the backlight on or off."
         },
-        "constant": {
-          "name": "Constant On",
-          "description": "Keep backlight constantly on"
+        "duration": {
+          "name": "Duration",
+          "description": "How long the backlight stays in this state, in seconds (0-255)."
         }
       }
     },
     "reset_filter": {
       "name": "Reset Filter",
-      "description": "Reset the filter alarm status.",
-      "fields": {
-        "filter_type": {
-          "name": "Filter Type",
-          "description": "Type of filter to reset",
-          "selector": {
-            "select": {
-              "options": {
-                "fltalm": "Air Filter",
-                "wpalm": "Water Panel",
-                "dehalm": "Dehumidifier",
-                "sysalm": "System"
-              }
-            }
-          }
-        }
-      }
+      "description": "Reset the thermostat filter timer."
     },
     "set_lockout": {
       "name": "Set Lockout",
-      "description": "Configure thermostat lockout features.",
+      "description": "Configure thermostat lockout settings (omit any field to leave it unchanged).",
       "fields": {
-        "lockout_type": {
-          "name": "Lockout Type",
-          "description": "Type of lockout to configure",
-          "selector": {
-            "select": {
-              "options": {
-                "fanlk": "Fan Lockout",
-                "modelk": "Mode Lockout",
-                "updnlk": "Setpoint Lockout"
-              }
-            }
-          }
+        "fan_lockout": {
+          "name": "Fan Lockout",
+          "description": "Lock the fan setting (0 = unlocked, 1 = partial, 2 = full)."
         },
-        "lockout_value": {
-          "name": "Lockout Value",
-          "description": "Lockout setting (0: disabled, 1: time-limited, 2: total lockout)"
+        "mode_lockout": {
+          "name": "Mode Lockout",
+          "description": "Lock the HVAC mode setting (0 = unlocked, 1 = partial, 2 = full)."
+        },
+        "setpoint_lockout": {
+          "name": "Setpoint Lockout",
+          "description": "Lock the setpoint adjustment (0-4)."
+        },
+        "network_lockout": {
+          "name": "Network Lockout",
+          "description": "Lock network override (0 = unlocked, 1 = locked)."
+        },
+        "lockout_time": {
+          "name": "Lockout Time",
+          "description": "Lockout reset time in minutes (0-255)."
+        },
+        "lockout_limit": {
+          "name": "Lockout Limit",
+          "description": "Maximum number of allowed setpoint changes before lockout (0-20)."
         }
       }
     },
@@ -200,24 +224,9 @@
       "fields": {
         "cos_flags": {
           "name": "COS Flags",
-          "description": "Change of State flags to enable",
-          "selector": {
-            "select": {
-              "multiple": true,
-              "options": {
-                "c1": "HVAC Relays",
-                "c2": "Temperature/Humidity",
-                "c5": "Setpoints",
-                "c7": "Mode",
-                "c8": "Fan",
-                "c14": "Alarms",
-                "c19": "Errors"
-              }
-            }
-          }
+          "description": "Change of State flags to enable."
         }
       }
     }
   }
 }
-

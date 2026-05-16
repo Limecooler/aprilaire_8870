@@ -19,6 +19,10 @@ from .const import DOMAIN, HVAC_RELAY_INDICES
 
 _LOGGER = logging.getLogger(__name__)
 
+# RS-485 bus is single-master half-duplex — serialize platform updates.
+PARALLEL_UPDATES = 1
+
+
 async def async_setup_entry(
     hass: HomeAssistant,
     config_entry: ConfigEntry,
@@ -28,8 +32,8 @@ async def async_setup_entry(
     coordinator = hass.data[DOMAIN][config_entry.entry_id]["coordinator"]
     devices = hass.data[DOMAIN][config_entry.entry_id]["devices"]
     discovered_addresses = hass.data[DOMAIN][config_entry.entry_id]["discovered_addresses"]
-    
-    entities = []
+
+    entities: list[BinarySensorEntity] = []
     
     # Create entities for both initialized devices and discovered addresses
     all_device_ids = set(devices.keys()) | set(discovered_addresses)
@@ -102,15 +106,14 @@ class AprilaireBinarySensor(CoordinatorEntity, BinarySensorEntity):
             # Generate a fallback ID if device doesn't have an address
             self._device_id = f"unknown_{id(self)}"
         
-        # Safely build name and unique_id
         if device is not None:
-            device_name = getattr(device, "name", f"Aprilaire {self._device_id}")
             device_unique_id = getattr(device, "unique_id", f"{DOMAIN}_{self._device_id}")
         else:
-            device_name = f"Aprilaire {self._device_id}"
             device_unique_id = f"{DOMAIN}_{self._device_id}"
-            
-        self._attr_name = f"{device_name} {name_suffix}"
+
+        # With _attr_has_entity_name=True, HA prepends the device name automatically;
+        # _attr_name carries only the entity-specific suffix.
+        self._attr_name = name_suffix
         self._attr_unique_id = f"{device_unique_id}_{unique_id_suffix}"
         self._attr_device_class = device_class
         self._attr_entity_category = entity_category

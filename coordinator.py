@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import traceback
 from datetime import timedelta
 from typing import Any, Dict, List, Optional, Set
 
@@ -189,42 +190,6 @@ class AprilaireDataUpdateCoordinator(DataUpdateCoordinator):
         is_connected = (state == "connected")
         self._connection_state_changed(is_connected)
 
-    @callback
-    def _connection_state_changed(self, connected: bool) -> None:
-        """Handle connection state changes."""
-        _LOGGER.debug("Connection state change callback: %s (current state: %s)", 
-                    connected, self._connection_state)
-        
-        if self._connection_state == connected:
-            _LOGGER.debug("Connection state unchanged, ignoring")
-            return
-            
-        _LOGGER.info("Connection state changed from %s to %s", 
-                self._connection_state, connected)
-        self._connection_state = connected
-        
-        if connected:
-            # Connection established, schedule an immediate update
-            _LOGGER.debug("Connection established, requesting immediate update")
-            self.async_request_refresh()
-        else:
-            # Connection lost, mark devices as unavailable
-            _LOGGER.debug("Connection lost, marking devices as unavailable")
-            
-            # Initialize device data if needed
-            if self._device_data is None:
-                self._device_data = {}
-            if self.data is None:
-                self.data = {}
-                
-            for device_id in self._device_data:
-                self._device_data[device_id]["available"] = False
-                # Also update main data structure
-                if device_id in self.data:
-                    self.data[device_id]["available"] = False
-            
-            self.async_update_listeners()
-
     async def _process_cos_messages(self) -> None:
         """Process COS messages from the queue."""
         try:
@@ -260,9 +225,10 @@ class AprilaireDataUpdateCoordinator(DataUpdateCoordinator):
         self._connection_state = connected
         
         if connected:
-            # Connection established, schedule an immediate update
-            _LOGGER.debug("Connection established, requesting immediate update")
-            self.async_request_refresh()
+            # Connection re-established. The next scheduled update will refresh
+            # state; we don't kick off an extra refresh here to avoid racing the
+            # entry-setup / unload paths that toggle connection state.
+            _LOGGER.debug("Connection established — awaiting next scheduled refresh")
         else:
             # Connection lost, mark devices as unavailable
             _LOGGER.debug("Connection lost, marking devices as unavailable")
@@ -375,45 +341,58 @@ class AprilaireDataUpdateCoordinator(DataUpdateCoordinator):
             _LOGGER.error("Error parsing COS message: %s - %s", message, ex)
 
     async def async_verify_cos_functionality(self) -> bool:
-        """Verify COS functionality is working for all devices."""
+        """Verify COS functionality per-device.
+
+        Returns True if a majority of devices have COS working — in that case
+        we switch to the long-poll interval and trust COS broadcasts to keep
+        state fresh for everyone. If most devices lack COS, we stay on the
+        fallback (more frequent) polling interval but log per-device so the
+        problem stays visible without spamming a single noisy WARNING.
+        """
         if not self._cos_enabled:
             return False
-            
+
         _LOGGER.debug("Verifying COS functionality for all devices")
-        
-        all_verified = True
+
         if self.devices is None:
             _LOGGER.warning("No devices available to verify COS functionality")
             return False
-            
+
+        total = 0
+        verified = 0
         for device_id, device in self.devices.items():
+            total += 1
             try:
-                # Verify COS functionality for this device
-                cos_verified = await device.async_verify_cos()
-                if not cos_verified:
-                    _LOGGER.warning(
-                        "COS functionality verification failed for device %s", device_id
+                if await device.async_verify_cos():
+                    verified += 1
+                else:
+                    _LOGGER.info(
+                        "COS not active on device %s — will continue polling it",
+                        device_id,
                     )
-                    all_verified = False
-                
             except Exception as ex:  # pylint: disable=broad-except
                 _LOGGER.error(
                     "Failed to verify COS functionality for device %s: %s", device_id, ex
                 )
-                all_verified = False
-                
-        self._cos_verified = all_verified
+
         self._last_cos_verification = dt_util.utcnow()
-        
-        # If COS is verified for all devices, switch to normal scan interval
-        if all_verified:
-            _LOGGER.info("COS functionality verified for all devices")
+        # "Mostly verified" = at least half of the devices broadcast COS.
+        cos_healthy = total > 0 and verified * 2 >= total
+        self._cos_verified = cos_healthy
+
+        if cos_healthy:
+            _LOGGER.info(
+                "COS active on %d/%d devices — using normal scan interval", verified, total
+            )
             self.update_interval = timedelta(seconds=self._normal_scan_interval)
         else:
-            _LOGGER.warning("COS functionality could not be verified for all devices")
+            _LOGGER.warning(
+                "COS active on only %d/%d devices — staying on fallback scan interval",
+                verified, total,
+            )
             self.update_interval = timedelta(seconds=self._fallback_scan_interval)
-            
-        return all_verified
+
+        return cos_healthy
 
     async def _async_update_data(self) -> Dict[str, Dict[str, Any]]:
         """Update data via polling with improved error handling."""
@@ -453,9 +432,16 @@ class AprilaireDataUpdateCoordinator(DataUpdateCoordinator):
                 _LOGGER.debug("Initializing data dictionary")
                 self.data = {}
                 
-            # Update each device
+            # Update each device. Pace requests so we don't crowd the RS-485 bus
+            # — every command needs ~265ms processing time on the thermostat,
+            # and back-to-back polls starve higher-addressed devices first.
+            from .const import THERMOSTAT_PROCESSING_TIME_MS
+            inter_device_delay = THERMOSTAT_PROCESSING_TIME_MS / 1000
+
             if self.devices is not None:
-                for device_id, device in self.devices.items():
+                for idx, (device_id, device) in enumerate(self.devices.items()):
+                    if idx > 0:
+                        await asyncio.sleep(inter_device_delay)
                     _LOGGER.debug("Updating device %s", device_id)
                     try:
                         # Poll device state

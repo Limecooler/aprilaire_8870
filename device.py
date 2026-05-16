@@ -1,6 +1,7 @@
 """Device representation of Aprilaire 8870 thermostats."""
 import asyncio
 import logging
+import traceback
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
@@ -43,6 +44,7 @@ from .const import (
     DEFAULT_COS_FLAGS,
     EQUIPMENT_TYPE_HEAT_COOL,
     EQUIPMENT_TYPE_HEAT_PUMP,
+    THERMOSTAT_PROCESSING_TIME_MS,
 )
 from .protocol import AprilaireProtocol
 
@@ -427,13 +429,44 @@ class AprilaireDevice:
             self.available = False
             return False
 
+    async def _query_with_retries(
+        self,
+        command: str,
+        *,
+        retries: int,
+        timeout: Optional[float] = None,
+    ) -> Optional[str]:
+        """Query the thermostat and retry transient failures with jitter."""
+        import random
+
+        for attempt in range(retries + 1):
+            try:
+                response = await self.protocol.execute_query_command(
+                    self.address, command, timeout=timeout
+                )
+            except Exception as ex:
+                _LOGGER.debug(
+                    "Exception querying %s on thermostat %s (attempt %d): %s",
+                    command, self.address, attempt + 1, ex,
+                )
+                response = None
+
+            if response is not None:
+                return response
+
+            if attempt < retries:
+                # 0.5s base with a small jitter so 11 devices don't synchronize their retries.
+                await asyncio.sleep(0.5 + random.uniform(0, 0.2))
+
+        return None
+
     async def async_update(self) -> bool:
         """Update device state by querying the thermostat with error handling."""
         if not self.available:
             return False
-            
+
         success = False
-            
+
         try:
             # Query essential items
             essential_commands = [
@@ -443,39 +476,41 @@ class AprilaireDevice:
                 ("HVAC", CMD_HVAC),
                 ("HOLD", CMD_HOLD)
             ]
-            
+
             # Add setpoint queries based on current mode
             mode = self._state.get("mode")
             if mode in [MODE_HEAT, MODE_AUTO, MODE_EMHT]:
                 essential_commands.append(("SH", CMD_SH))
             if mode in [MODE_COOL, MODE_AUTO]:
                 essential_commands.append(("SC", CMD_SC))
-                
-            # Process essential commands
+
+            # Process essential commands with retries to mask transient bus glitches.
             for cmd_name, cmd in essential_commands:
-                try:
-                    response = await self.protocol.execute_query_command(self.address, cmd)
-                    if response is not None:
-                        if cmd_name == "TEMP":
-                            self._state["temperature"] = self._parse_temperature(response)
-                            success = True  # Mark success if we at least get temperature
-                        elif cmd_name == "MODE":
-                            self._state["mode"] = response
-                            success = True  # Also consider success if we get mode
-                        elif cmd_name == "FAN":
-                            self._state["fan_mode"] = response
-                        elif cmd_name == "HVAC":
-                            self._state["hvac_status"] = response
-                        elif cmd_name == "HOLD":
-                            self._state["hold_status"] = response
-                        elif cmd_name == "SH":
-                            self._state["heat_setpoint"] = self._parse_temperature(response)
-                        elif cmd_name == "SC":
-                            self._state["cool_setpoint"] = self._parse_temperature(response)
-                except Exception as ex:
-                    _LOGGER.warning("Error querying %s for device %s: %s", cmd, self.address, ex)
-                        
-            # Optional items - process with minimal retries and allow skipping
+                response = await self._query_with_retries(cmd, retries=2)
+                if response is None:
+                    _LOGGER.warning(
+                        "No response after retries querying %s for device %s",
+                        cmd, self.address,
+                    )
+                    continue
+                if cmd_name == "TEMP":
+                    self._state["temperature"] = self._parse_temperature(response)
+                    success = True
+                elif cmd_name == "MODE":
+                    self._state["mode"] = response
+                    success = True
+                elif cmd_name == "FAN":
+                    self._state["fan_mode"] = response
+                elif cmd_name == "HVAC":
+                    self._state["hvac_status"] = response
+                elif cmd_name == "HOLD":
+                    self._state["hold_status"] = response
+                elif cmd_name == "SH":
+                    self._state["heat_setpoint"] = self._parse_temperature(response)
+                elif cmd_name == "SC":
+                    self._state["cool_setpoint"] = self._parse_temperature(response)
+
+            # Optional items - one retry with shorter timeout, allow skipping.
             optional_commands = [
                 ("HUM", CMD_HUM),
                 ("OT", CMD_OT),
@@ -485,32 +520,26 @@ class AprilaireDevice:
                 ("DEHALM", "DEHALM"),
                 ("ERROR", "ERROR")
             ]
-            
-            # Process optional commands without failing if they don't work
+
             for cmd_name, cmd in optional_commands:
-                try:
-                    response = await self.protocol.execute_query_command(
-                        self.address, cmd, timeout=2.0  # Shorter timeout for optional commands
-                    )
-                    if response is not None:
-                        if cmd_name == "HUM":
-                            self._state["humidity"] = self._parse_humidity(response)
-                        elif cmd_name == "OT":
-                            self._state["outdoor_temperature"] = self._parse_temperature(response)
-                        elif cmd_name == "FLTALM":
-                            self._state["filter_alarm"] = (response == "ON")
-                        elif cmd_name == "WPALM":
-                            self._state["water_panel_alarm"] = (response == "ON")
-                        elif cmd_name == "SYSALM":
-                            self._state["system_alarm"] = (response == "ON")
-                        elif cmd_name == "DEHALM":
-                            self._state["dehumidifier_alarm"] = (response == "ON")
-                        elif cmd_name == "ERROR":
-                            self._state["error_status"] = response
-                except Exception as ex:
-                    # Just log debug for optional commands
-                    _LOGGER.debug("Error querying %s for device %s: %s", cmd, self.address, ex)
-                    
+                response = await self._query_with_retries(cmd, retries=1, timeout=2.0)
+                if response is None:
+                    continue
+                if cmd_name == "HUM":
+                    self._state["humidity"] = self._parse_humidity(response)
+                elif cmd_name == "OT":
+                    self._state["outdoor_temperature"] = self._parse_temperature(response)
+                elif cmd_name == "FLTALM":
+                    self._state["filter_alarm"] = (response == "ON")
+                elif cmd_name == "WPALM":
+                    self._state["water_panel_alarm"] = (response == "ON")
+                elif cmd_name == "SYSALM":
+                    self._state["system_alarm"] = (response == "ON")
+                elif cmd_name == "DEHALM":
+                    self._state["dehumidifier_alarm"] = (response == "ON")
+                elif cmd_name == "ERROR":
+                    self._state["error_status"] = response
+
             return success
         except Exception as err:
             _LOGGER.error("Error updating thermostat %s: %s", self.address, err)
@@ -676,9 +705,47 @@ class AprilaireDevice:
                                 self.address, cr_ex)
                 return False
             
-            # Rest of the method remains unchanged
-            # ... [existing code for enabling COS flags]
-            
+            # Enable each requested COS broadcast flag (e.g. c1=ON). Pace the
+            # writes so we don't crowd the RS-485 bus; record which the firmware
+            # accepted so async_verify_cos has something to check later.
+            supported_flags: Set[str] = set()
+            for flag in flags:
+                await asyncio.sleep(THERMOSTAT_PROCESSING_TIME_MS / 1000)
+                try:
+                    flag_result = await self.protocol.execute_assignment_command(
+                        self.address, flag, "ON"
+                    )
+                except Exception as flag_ex:
+                    _LOGGER.debug(
+                        "Exception enabling COS flag %s on thermostat %s: %s",
+                        flag, self.address, flag_ex,
+                    )
+                    continue
+
+                if flag_result and f"{flag}=ON" in flag_result:
+                    supported_flags.add(flag)
+                else:
+                    _LOGGER.debug(
+                        "COS flag %s not accepted by thermostat %s (response: %r)",
+                        flag, self.address, flag_result,
+                    )
+
+            if supported_flags:
+                self._cos_flags = supported_flags
+                self._cos_enabled = True
+                _LOGGER.info(
+                    "Enabled COS with %d flag(s) on thermostat %s: %s",
+                    len(supported_flags), self.address, sorted(supported_flags),
+                )
+                return True
+
+            _LOGGER.warning(
+                "CR=NORMAL succeeded but no COS flags were accepted on thermostat %s",
+                self.address,
+            )
+            self._cos_enabled = False
+            return False
+
         except Exception as err:
             _LOGGER.exception("Error enabling COS on thermostat %s: %s", self.address, err)
             self._cos_enabled = False

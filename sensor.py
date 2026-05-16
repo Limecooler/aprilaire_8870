@@ -31,6 +31,10 @@ from .const import (
 
 _LOGGER = logging.getLogger(__name__)
 
+# RS-485 bus is single-master half-duplex — serialize platform updates.
+PARALLEL_UPDATES = 1
+
+
 async def async_setup_entry(
     hass: HomeAssistant,
     entry: ConfigEntry,
@@ -40,8 +44,8 @@ async def async_setup_entry(
     coordinator = hass.data[DOMAIN][entry.entry_id]["coordinator"]
     devices = hass.data[DOMAIN][entry.entry_id]["devices"]
     discovered_addresses = hass.data[DOMAIN][entry.entry_id]["discovered_addresses"]
-    
-    entities = []
+
+    entities: list[SensorEntity] = []
     
     # Create entities for both initialized devices and discovered addresses
     all_device_ids = set(devices.keys()) | set(discovered_addresses)
