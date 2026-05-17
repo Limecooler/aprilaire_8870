@@ -133,16 +133,6 @@ async def async_initialize_devices_background(
                     len(initialized_devices), len(discovered_addresses))
         coordinator.devices = initialized_devices
 
-        # If entry has no stored device_names (older entry from before v0.2.2),
-        # probe the live bus now and persist what we find, then push the names
-        # into the HA device registry so users see their location names.
-        try:
-            await _async_backfill_and_apply_device_names(
-                hass, entry, coordinator.connection, device_manager, initialized_devices
-            )
-        except Exception as name_ex:
-            _LOGGER.exception("Error during device-name backfill: %s", name_ex)
-
         # Perform initial data update for all devices
         try:
             _LOGGER.debug("Performing initial data refresh for all devices")
@@ -156,10 +146,31 @@ async def async_initialize_devices_background(
         # Register services now that initialization is complete
         await async_register_services(hass)
         
+        # Device-name backfill is bus-heavy (~1s/device) and bootstrap-blocking
+        # when awaited inline. Fire-and-forget as a background task so it can
+        # finish after HA marks startup complete.
+        _LOGGER.debug("Scheduling device-name backfill")
+        try:
+            create_bg = getattr(hass, "async_create_background_task", None)
+            backfill_coro = _async_backfill_and_apply_device_names(
+                hass, entry, coordinator.connection, device_manager, initialized_devices
+            )
+            if create_bg is not None:
+                create_bg(backfill_coro, name=f"{DOMAIN}_name_backfill_{entry.entry_id}")
+            else:
+                hass.async_create_task(backfill_coro)
+        except Exception as name_ex:
+            _LOGGER.exception("Error scheduling device-name backfill: %s", name_ex)
+
         # After all devices are initialized and services registered, set up COS functionality in background
         _LOGGER.debug("Scheduling COS functionality setup")
         try:
-            hass.async_create_task(async_setup_cos_background(hass, entry, initialized_devices))
+            create_bg = getattr(hass, "async_create_background_task", None)
+            cos_coro = async_setup_cos_background(hass, entry, initialized_devices)
+            if create_bg is not None:
+                create_bg(cos_coro, name=f"{DOMAIN}_cos_setup_{entry.entry_id}")
+            else:
+                hass.async_create_task(cos_coro)
             _LOGGER.debug("Successfully scheduled COS setup task")
         except Exception as cos_ex:
             _LOGGER.exception("Error scheduling COS setup: %s", cos_ex)
@@ -324,12 +335,28 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         _LOGGER.debug("Registering update listener for config entry changes")
         entry.async_on_unload(entry.add_update_listener(async_update_options))
         
-        # Schedule background task for detailed device initialization
+        # Detailed device init can take 30-120s on busy RS-485 buses with
+        # many thermostats. Use async_create_background_task so HA's 60s
+        # bootstrap watchdog doesn't trip ("Setup timed out for bootstrap
+        # waiting on ...") and surface the "Wrapping up startup" banner.
+        # Backwards-compatible: falls back to async_create_task on older
+        # HA cores that lack the background-task helper.
         _LOGGER.debug("Scheduling background task for device initialization")
         try:
-            hass.async_create_task(
-                async_initialize_devices_background(hass, entry, coordinator, device_manager, discovered_addresses)
-            )
+            create_bg = getattr(hass, "async_create_background_task", None)
+            if create_bg is not None:
+                create_bg(
+                    async_initialize_devices_background(
+                        hass, entry, coordinator, device_manager, discovered_addresses
+                    ),
+                    name=f"{DOMAIN}_init_{entry.entry_id}",
+                )
+            else:
+                hass.async_create_task(
+                    async_initialize_devices_background(
+                        hass, entry, coordinator, device_manager, discovered_addresses
+                    )
+                )
             _LOGGER.debug("Successfully scheduled background initialization task")
         except Exception as task_ex:
             _LOGGER.exception("Error scheduling background initialization task: %s", task_ex)
