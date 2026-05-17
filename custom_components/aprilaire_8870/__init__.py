@@ -385,6 +385,11 @@ async def _async_probe_device_names_live(
     before v0.2.2 added discovery-time name capture.
     """
     if not connection or not addresses:
+        _LOGGER.warning(
+            "Name probe skipped: connection=%s addresses=%s",
+            "set" if connection else "None",
+            len(addresses) if addresses else 0,
+        )
         return {}
     names: dict[str, str] = {}
     for address in addresses:
@@ -397,14 +402,20 @@ async def _async_probe_device_names_live(
                 if hasattr(connection, "get_received_messages")
                 else []
             )
+            # Logged at WARNING so it lands in HA's system_log without needing
+            # debug logging on the whole integration — diagnostic for users
+            # whose thermostat names aren't being picked up.
+            _LOGGER.warning(
+                "Name probe address=%s responses=%r", address, responses
+            )
             name = _parse_location_name(int(address), responses or [])
             if name:
                 names[str(address)] = name
-                _LOGGER.info(
-                    "Discovered location name for thermostat %s: %r", address, name
+                _LOGGER.warning(
+                    "Name probe matched address=%s name=%r", address, name
                 )
         except Exception as probe_ex:
-            _LOGGER.debug(
+            _LOGGER.warning(
                 "Name probe failed for thermostat %s: %s", address, probe_ex
             )
     return names
@@ -426,14 +437,20 @@ async def _async_backfill_and_apply_device_names(
        themselves (``name_by_user is None``).
     """
     stored_names: dict[str, str] = dict(entry.data.get("device_names") or {})
+    _LOGGER.warning(
+        "Name backfill starting: stored_names=%s devices=%d",
+        stored_names or "<empty>",
+        len(devices) if devices else 0,
+    )
 
     if not stored_names and devices:
-        _LOGGER.info(
+        _LOGGER.warning(
             "Entry %s has no stored device names — probing live bus for %d devices",
             entry.entry_id,
             len(devices),
         )
         probed = await _async_probe_device_names_live(connection, list(devices.keys()))
+        _LOGGER.warning("Name probe complete: found %d names: %s", len(probed), probed)
         if probed:
             new_data = {**entry.data, "device_names": probed}
             hass.config_entries.async_update_entry(entry, data=new_data)
@@ -450,28 +467,36 @@ async def _async_backfill_and_apply_device_names(
                     device.name = name
 
     if not stored_names:
+        _LOGGER.warning(
+            "Name backfill stopping: no stored names and probe returned nothing"
+        )
         return
 
     registry = dr.async_get(hass)
     renamed = 0
+    skipped_user = 0
+    skipped_match = 0
+    skipped_missing = 0
     for address_str, name in stored_names.items():
         entry_in_registry = registry.async_get_device(
             identifiers={(DOMAIN, address_str)}
         )
         if entry_in_registry is None:
+            skipped_missing += 1
             continue
         if entry_in_registry.name_by_user is not None:
             # User picked their own name in the UI; don't override it.
+            skipped_user += 1
             continue
         if entry_in_registry.name == name:
+            skipped_match += 1
             continue
         registry.async_update_device(entry_in_registry.id, name=name)
         renamed += 1
-    if renamed:
-        _LOGGER.info(
-            "Renamed %d aprilaire_8870 device(s) in registry from discovered names",
-            renamed,
-        )
+    _LOGGER.warning(
+        "Name backfill registry pass: renamed=%d skipped_user=%d skipped_unchanged=%d skipped_no_registry_entry=%d",
+        renamed, skipped_user, skipped_match, skipped_missing,
+    )
 
 
 async def async_update_options(hass: HomeAssistant, entry: ConfigEntry) -> None:
