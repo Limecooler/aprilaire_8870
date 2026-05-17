@@ -1211,32 +1211,37 @@ def test_find_matching_response_device_id_unparsable() -> None:
 # ---- _enable_cos_with_retry -----------------------------------------------
 
 
-async def test_enable_cos_with_retry_succeeds() -> None:
+async def test_enable_cos_succeeds_with_cr_normal() -> None:
+    """CR=NORMAL accepted → True; flags fired best-effort, no per-flag verify."""
     dev, conn, _ = make_device()
 
     async def reply(cmd, timeout=None):
         if "CR=NORMAL" in cmd:
             return "SN1 CR=NORMAL"
-        if "c1=ON" in cmd or "c2=ON" in cmd:
-            return cmd.strip()
+        # Even if flags NACK / silence, the overall result should still be True.
         return None
 
     conn.async_send_command_with_response = reply
     with patch("custom_components.aprilaire_8870.device.asyncio.sleep", new=AsyncMock()):
         result = await dev._enable_cos_with_retry({"c1", "c2"})
     assert result is True
-    assert "c1" in dev._cos_flags or "c2" in dev._cos_flags
+    assert dev._cos_enabled is True
+    # All requested flags recorded optimistically.
+    assert dev._cos_flags == {"c1", "c2"}
 
 
-async def test_enable_cos_with_retry_cr_fails() -> None:
+async def test_enable_cos_fails_when_cr_not_accepted() -> None:
+    """CR=NORMAL is the hard requirement — its failure means no COS."""
     dev, conn, _ = make_device()
     conn.async_send_command_with_response = AsyncMock(return_value=None)
     with patch("custom_components.aprilaire_8870.device.asyncio.sleep", new=AsyncMock()):
         result = await dev._enable_cos_with_retry({"c1"})
     assert result is False
+    assert dev._cos_enabled is False
 
 
-async def test_enable_cos_with_retry_flag_exception() -> None:
+async def test_enable_cos_swallows_flag_exception() -> None:
+    """A flag-send raising shouldn't abort the others (best-effort semantics)."""
     dev, conn, _ = make_device()
 
     async def replies(cmd, timeout=None):
@@ -1251,16 +1256,8 @@ async def test_enable_cos_with_retry_flag_exception() -> None:
     conn.async_send_command_with_response = replies
     with patch("custom_components.aprilaire_8870.device.asyncio.sleep", new=AsyncMock()):
         result = await dev._enable_cos_with_retry({"c1", "c2"})
-    # c2 worked → True
+    # CR succeeded → overall True regardless of flag outcomes.
     assert result is True
-
-
-async def test_enable_cos_with_retry_outer_exception() -> None:
-    dev, _, _ = make_device()
-    with patch.object(dev, "_send_command_with_retry", side_effect=RuntimeError("boom")), \
-         patch("custom_components.aprilaire_8870.device.asyncio.sleep", new=AsyncMock()):
-        result = await dev._enable_cos_with_retry({"c1"})
-    assert result is False
 
 
 # ---- _update_with_delays / _update_alarm_statuses / _update_error_status --

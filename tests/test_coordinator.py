@@ -625,6 +625,31 @@ async def test_handle_bus_message_ignores_garbage(hass) -> None:
     dev._process_state_response.assert_not_called()
 
 
+async def test_cos_verification_backs_off_when_zero_accept(hass) -> None:
+    """When NO device accepts COS flags, verification interval stretches to 6h."""
+    dev = MagicMock()
+    dev.async_verify_cos = AsyncMock(return_value=False)
+    coord = make_coord(hass, devices={1: dev, 2: dev})
+    coord._cos_enabled = True
+    coord._cos_verification_interval = 1800  # default 30 min
+    assert await coord.async_verify_cos_functionality() is False
+    assert coord._cos_verification_interval == 6 * 3600
+
+
+async def test_cos_verification_keeps_default_interval_when_some_accept(hass) -> None:
+    dev_ok = MagicMock()
+    dev_ok.async_verify_cos = AsyncMock(return_value=True)
+    dev_bad = MagicMock()
+    dev_bad.async_verify_cos = AsyncMock(return_value=False)
+    coord = make_coord(hass, devices={1: dev_ok, 2: dev_bad})
+    coord._cos_enabled = True
+    coord._cos_verification_interval = 1800
+    # 1/2 verified = "mostly verified" by the majority rule.
+    assert await coord.async_verify_cos_functionality() is True
+    # Interval unchanged from default.
+    assert coord._cos_verification_interval == 1800
+
+
 async def test_capability_cache_load_filters_by_entry_and_ttl(hass) -> None:
     """Loader drops entries from other config_entries AND stale entries."""
     coord = make_coord(hass)

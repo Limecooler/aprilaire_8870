@@ -386,6 +386,18 @@ class AprilaireDataUpdateCoordinator(DataUpdateCoordinator):
                 verified, total,
             )
             self.update_interval = timedelta(seconds=self._poll_backstop)
+            # v0.3.0 back-off: if NONE of the devices' flags verified,
+            # stretch the verification interval to 6h (was 30min). Most
+            # firmwares don't support per-flag COS subscription at all, so
+            # re-probing every 30min is bus-noise for no benefit.
+            if verified == 0 and self._cos_verification_interval < 6 * 3600:
+                self._cos_verification_interval = 6 * 3600
+                _LOGGER.info(
+                    "0/%d devices accepted COS flags — backing off "
+                    "verification to every 6h. Unsolicited broadcasts still "
+                    "flow via _handle_bus_message regardless.",
+                    total,
+                )
 
         return cos_healthy
 
