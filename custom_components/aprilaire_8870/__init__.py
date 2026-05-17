@@ -8,13 +8,14 @@ import voluptuous as vol
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers import config_validation as cv
+from homeassistant.helpers import config_validation as cv, device_registry as dr
 from homeassistant.helpers.typing import ConfigType
 from homeassistant.exceptions import ConfigEntryNotReady
 
 from .const import DOMAIN, PLATFORMS
 
 CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
+from .config_flow import _parse_location_name
 from .connection import AprilaireConnectionBase, SerialServerConnection, ComPortConnection
 from .protocol import AprilaireProtocol
 from .coordinator import AprilaireDataUpdateCoordinator
@@ -128,10 +129,20 @@ async def async_initialize_devices_background(
                 # Continue with other devices even if one fails
     
         # Update the coordinator with all discovered devices
-        _LOGGER.debug("Background initialization completed for %d of %d thermostats", 
+        _LOGGER.debug("Background initialization completed for %d of %d thermostats",
                     len(initialized_devices), len(discovered_addresses))
         coordinator.devices = initialized_devices
-        
+
+        # If entry has no stored device_names (older entry from before v0.2.2),
+        # probe the live bus now and persist what we find, then push the names
+        # into the HA device registry so users see their location names.
+        try:
+            await _async_backfill_and_apply_device_names(
+                hass, entry, coordinator.connection, device_manager, initialized_devices
+            )
+        except Exception as name_ex:
+            _LOGGER.exception("Error during device-name backfill: %s", name_ex)
+
         # Perform initial data update for all devices
         try:
             _LOGGER.debug("Performing initial data refresh for all devices")
@@ -139,7 +150,7 @@ async def async_initialize_devices_background(
             _LOGGER.debug("Initial data refresh completed successfully")
         except Exception as refresh_ex:
             _LOGGER.exception("Error performing initial data refresh: %s", refresh_ex)
-        
+
         _LOGGER.info("Background initialization complete for %d thermostats", len(initialized_devices))
         
         # Register services now that initialization is complete
@@ -336,6 +347,105 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 _LOGGER.error("Error disconnecting: %s", disc_ex)
                 
         raise ConfigEntryNotReady(f"Error connecting to Aprilaire network: {ex}") from ex
+
+async def _async_probe_device_names_live(
+    connection, addresses: list[int]
+) -> dict[str, str]:
+    """Probe each address with ID? and parse out the location-name prefix.
+
+    Mirrors the config_flow probe but runs against an already-connected
+    bus during entry setup. Used to backfill entries that were created
+    before v0.2.2 added discovery-time name capture.
+    """
+    if not connection or not addresses:
+        return {}
+    names: dict[str, str] = {}
+    for address in addresses:
+        try:
+            await asyncio.sleep(0.1)
+            await connection.async_send_command(f"SN{address} ID?")
+            await asyncio.sleep(1.0)
+            responses = (
+                connection.get_received_messages()
+                if hasattr(connection, "get_received_messages")
+                else []
+            )
+            name = _parse_location_name(int(address), responses or [])
+            if name:
+                names[str(address)] = name
+                _LOGGER.info(
+                    "Discovered location name for thermostat %s: %r", address, name
+                )
+        except Exception as probe_ex:
+            _LOGGER.debug(
+                "Name probe failed for thermostat %s: %s", address, probe_ex
+            )
+    return names
+
+
+async def _async_backfill_and_apply_device_names(
+    hass: HomeAssistant,
+    entry: ConfigEntry,
+    connection,
+    device_manager,
+    devices: dict,
+) -> None:
+    """Make sure HA's device registry reflects the on-device location names.
+
+    1. If ``entry.data["device_names"]`` is empty, probe the live bus and
+       persist the result so we never have to probe again.
+    2. For each in-memory AprilaireDevice, push the current name into the
+       device registry — but only when the user hasn't customized the name
+       themselves (``name_by_user is None``).
+    """
+    stored_names: dict[str, str] = dict(entry.data.get("device_names") or {})
+
+    if not stored_names and devices:
+        _LOGGER.info(
+            "Entry %s has no stored device names — probing live bus for %d devices",
+            entry.entry_id,
+            len(devices),
+        )
+        probed = await _async_probe_device_names_live(connection, list(devices.keys()))
+        if probed:
+            new_data = {**entry.data, "device_names": probed}
+            hass.config_entries.async_update_entry(entry, data=new_data)
+            stored_names = probed
+            # Push into in-memory devices so DeviceInfo follows.
+            device_manager.device_names = dict(probed)
+            for address_str, name in probed.items():
+                try:
+                    addr_int = int(address_str)
+                except ValueError:
+                    continue
+                device = devices.get(addr_int)
+                if device is not None:
+                    device.name = name
+
+    if not stored_names:
+        return
+
+    registry = dr.async_get(hass)
+    renamed = 0
+    for address_str, name in stored_names.items():
+        entry_in_registry = registry.async_get_device(
+            identifiers={(DOMAIN, address_str)}
+        )
+        if entry_in_registry is None:
+            continue
+        if entry_in_registry.name_by_user is not None:
+            # User picked their own name in the UI; don't override it.
+            continue
+        if entry_in_registry.name == name:
+            continue
+        registry.async_update_device(entry_in_registry.id, name=name)
+        renamed += 1
+    if renamed:
+        _LOGGER.info(
+            "Renamed %d aprilaire_8870 device(s) in registry from discovered names",
+            renamed,
+        )
+
 
 async def async_update_options(hass: HomeAssistant, entry: ConfigEntry) -> None:
     """Handle options update."""
