@@ -329,21 +329,8 @@ async def test_update_data_save_state_exception(hass) -> None:
         await coord._async_update_data()  # error swallowed
 
 
-async def test_update_data_cos_verification_triggered(hass) -> None:
-    dev = make_dev(1)
-    coord = make_coord(hass, devices={1: dev})
-    coord._connection_state = True
-    coord._cos_enabled = True
-    coord._last_cos_verification = None  # forces verification
-    coord._store = MagicMock()
-    coord._store.async_save = AsyncMock()
-    with patch.object(coord, "async_verify_cos_functionality", new=AsyncMock()) as v:
-        with patch("custom_components.aprilaire_8870.coordinator.asyncio.sleep", new=AsyncMock()):
-            await coord._async_update_data()
-    v.assert_called()
-
-
-async def test_update_data_cos_verify_exception(hass) -> None:
+async def test_update_data_does_not_trigger_cos_verification_inline(hass) -> None:
+    """v0.3.0: COS verification moved to its own timer, not the poll path."""
     dev = make_dev(1)
     coord = make_coord(hass, devices={1: dev})
     coord._connection_state = True
@@ -351,10 +338,36 @@ async def test_update_data_cos_verify_exception(hass) -> None:
     coord._last_cos_verification = None
     coord._store = MagicMock()
     coord._store.async_save = AsyncMock()
-    with patch.object(coord, "async_verify_cos_functionality",
-                      new=AsyncMock(side_effect=RuntimeError("boom"))):
+    with patch.object(coord, "async_verify_cos_functionality", new=AsyncMock()) as v:
         with patch("custom_components.aprilaire_8870.coordinator.asyncio.sleep", new=AsyncMock()):
             await coord._async_update_data()
+    # The inline path is gone — verification fires from its own scheduler.
+    v.assert_not_called()
+
+
+async def test_start_cos_verification_scheduler_subscribes_to_time_interval(hass) -> None:
+    coord = make_coord(hass)
+    coord._cos_enabled = True
+    with patch(
+        "custom_components.aprilaire_8870.coordinator.async_track_time_interval"
+    ) as mock_track:
+        mock_track.return_value = MagicMock()
+        coord.async_start_cos_verification_scheduler()
+    assert mock_track.called
+    assert coord._cos_verification_unsub is not None
+    # Idempotent — second call is a no-op.
+    with patch(
+        "custom_components.aprilaire_8870.coordinator.async_track_time_interval"
+    ) as mock_track2:
+        coord.async_start_cos_verification_scheduler()
+    mock_track2.assert_not_called()
+
+
+async def test_start_cos_verification_scheduler_no_op_when_disabled(hass) -> None:
+    coord = make_coord(hass)
+    coord._cos_enabled = False
+    coord.async_start_cos_verification_scheduler()
+    assert coord._cos_verification_unsub is None
 
 
 async def test_update_data_no_devices(hass) -> None:

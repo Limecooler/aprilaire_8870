@@ -142,6 +142,10 @@ async def async_initialize_devices_background(
         # Single listener notify after the whole batch — avoids 11 separate
         # refreshes for a single startup pass.
         coordinator.async_update_listeners()
+
+        # v0.3.0: COS verification now runs on its own timer rather than
+        # inline during _async_update_data. Start it once we have devices.
+        coordinator.async_start_cos_verification_scheduler()
     
         # Update the coordinator with all discovered devices
         _LOGGER.debug("Background initialization completed for %d of %d thermostats",

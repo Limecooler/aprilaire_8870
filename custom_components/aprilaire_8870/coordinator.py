@@ -6,13 +6,14 @@ import logging
 import re
 import traceback
 from datetime import timedelta
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Callable, Dict, List, Optional, Set
 
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 from homeassistant.helpers.storage import Store
 from homeassistant.util import dt as dt_util
 from homeassistant.helpers.dispatcher import async_dispatcher_connect
+from homeassistant.helpers.event import async_track_time_interval
 
 from .connection import SIGNAL_MESSAGE_RECEIVED
 from .const import (
@@ -123,6 +124,9 @@ class AprilaireDataUpdateCoordinator(DataUpdateCoordinator):
             hass, CAPABILITY_CACHE_VERSION, CAPABILITY_CACHE_KEY
         )
         self._capability_cache: Dict[str, Dict[str, Any]] = {}
+        # Independent timer for COS verification — moved out of the poll
+        # hot path so a long verification can't extend a poll cycle.
+        self._cos_verification_unsub: Optional[Callable[[], None]] = None
         self._cached_state = None
         self._state_loaded = False
 
@@ -180,6 +184,30 @@ class AprilaireDataUpdateCoordinator(DataUpdateCoordinator):
                 _LOGGER.debug("No stored state found")
         except Exception as ex:
             _LOGGER.error("Error loading stored state: %s", ex)
+
+    def async_start_cos_verification_scheduler(self) -> None:
+        """Start the periodic COS-verification timer (idempotent).
+
+        Runs verification on its own schedule (initially every
+        ``_cos_verification_interval`` seconds) so it never extends a
+        poll cycle. The interval is dynamic: if verification ever returns
+        0/N (most firmwares don't accept the flags), it stretches to 6h —
+        see async_verify_cos_functionality.
+        """
+        if self._cos_verification_unsub is not None:
+            return
+        if not self._cos_enabled:
+            return
+
+        async def _tick(_now):
+            try:
+                await self.async_verify_cos_functionality()
+            except Exception as ex:  # pragma: no cover (defensive)
+                _LOGGER.error("COS verification tick raised: %s", ex)
+
+        self._cos_verification_unsub = async_track_time_interval(
+            self.hass, _tick, timedelta(seconds=self._cos_verification_interval),
+        )
 
     async def async_load_capability_cache(self, entry_id: str) -> None:
         """Load the persisted capability cache for this entry.
@@ -415,22 +443,12 @@ class AprilaireDataUpdateCoordinator(DataUpdateCoordinator):
             raise UpdateFailed("Connection state mismatch")
             
         try:
-            # Check if we need to verify COS functionality
-            if (
-                self._cos_enabled
-                and (
-                    self._last_cos_verification is None
-                    or (dt_util.utcnow() - self._last_cos_verification).total_seconds()
-                    > self._cos_verification_interval
-                )
-            ):
-                try:
-                    _LOGGER.debug("Verifying COS functionality")
-                    await self.async_verify_cos_functionality()
-                except Exception as cos_ex:
-                    _LOGGER.error("Error verifying COS functionality: %s", cos_ex)
-                    _LOGGER.error("Traceback: %s", traceback.format_exc())
-                    
+            # COS verification used to run inline here, which could extend
+            # a poll cycle by 10-30s every 30min. It's now scheduled
+            # independently via async_track_time_interval (see
+            # async_start_cos_verification_scheduler), so the poll path is
+            # device queries only.
+
             # Initialize data dictionary if needed
             if self._device_data is None:
                 _LOGGER.debug("Initializing device_data dictionary")
@@ -643,6 +661,9 @@ class AprilaireDataUpdateCoordinator(DataUpdateCoordinator):
             self._connection_state_unsub()
         if hasattr(self, "_message_unsub") and self._message_unsub:
             self._message_unsub()
+        if hasattr(self, "_cos_verification_unsub") and self._cos_verification_unsub:
+            self._cos_verification_unsub()
+            self._cos_verification_unsub = None
             
         # Save final state
         await self._async_save_state()
