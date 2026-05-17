@@ -1,7 +1,5 @@
 {
   "name": "Aprilaire 8870 Thermostat",
   "render_readme": true,
-  "homeassistant": "2024.1.0",
-  "country": ["US", "CA"],
-  "zip_release": false
+  "country": ["US", "CA"]
 }
