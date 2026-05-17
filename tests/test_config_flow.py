@@ -92,6 +92,15 @@ def _patch_discovery(
     async def stub_send_command(self, command):
         return None
 
+    # The new future-registry-based send-with-response (v0.3.0) waits up to
+    # `timeout` seconds for the read loop to deliver a matching response.
+    # Tests don't run a real read loop, so without this stub the background
+    # device-init task blocks for 3s × N devices on every test and trips
+    # pytest's lingering-task detector. Returning None here matches the
+    # observable behavior of "no response within timeout".
+    async def stub_send_with_response(self, command, timeout=3.0):
+        return None
+
     def stub_get_received_messages(self):
         return received_seq.pop(0) if received_seq else []
 
@@ -101,6 +110,11 @@ def _patch_discovery(
         patch.object(cf.SerialServerConnection, "async_start_reading", new=stub_start_reading),
         patch.object(cf.SerialServerConnection, "async_stop_reading", new=stub_stop_reading),
         patch.object(cf.SerialServerConnection, "async_send_command", new=stub_send_command),
+        patch.object(
+            cf.SerialServerConnection,
+            "async_send_command_with_response",
+            new=stub_send_with_response,
+        ),
         patch.object(
             cf.SerialServerConnection,
             "get_received_messages",
@@ -278,6 +292,10 @@ async def test_serial_port_success(hass) -> None:
     async def stub_send(self, cmd):
         pass
 
+    async def stub_send_with_response(self, command, timeout=3.0):
+        # See test_config_flow stub_send_with_response for rationale.
+        return None
+
     def stub_recv(self):
         return received_seq.pop(0) if received_seq else []
 
@@ -286,6 +304,7 @@ async def test_serial_port_success(hass) -> None:
          patch.object(cf.ComPortConnection, "async_start_reading", new=stub_start), \
          patch.object(cf.ComPortConnection, "async_stop_reading", new=stub_stop), \
          patch.object(cf.ComPortConnection, "async_send_command", new=stub_send), \
+         patch.object(cf.ComPortConnection, "async_send_command_with_response", new=stub_send_with_response), \
          patch.object(cf.ComPortConnection, "get_received_messages", new=stub_recv), \
          patch("custom_components.aprilaire_8870.config_flow.asyncio.sleep", new=AsyncMock()):
         result = await _start_serial_port_flow(hass)

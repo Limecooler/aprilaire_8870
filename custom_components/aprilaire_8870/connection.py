@@ -1,9 +1,10 @@
 """Connection handling for Aprilaire 8870 thermostats."""
 import asyncio
 import logging
+import re
 from abc import ABC, abstractmethod
 import async_timeout
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple
 import time
 import random
 
@@ -38,13 +39,21 @@ STATE_ERROR = "error"
 SIGNAL_CONNECTION_STATE_CHANGED = f"{DOMAIN}_connection_state_changed"
 SIGNAL_MESSAGE_RECEIVED = f"{DOMAIN}_message_received"
 
+# Match any prefixed thermostat response: ``SN<addr>...`` — used to figure
+# out which pending request a given inbound line should resolve.
+_ADDRESS_RE = re.compile(r"^SN(\d+)")
+
+# Parse a command being sent to extract its addressed target and the request
+# code, e.g. ``SN3 TEMP?`` → (3, "TEMP"), ``SN1 CR=NORMAL`` → (1, "CR").
+_COMMAND_RE = re.compile(r"^SN(\d+)\s+([A-Z][A-Z0-9]*)")
+
 
 class AprilaireConnectionBase(ABC):
     """Base class for Aprilaire thermostat connections."""
 
     def __init__(self, hass: HomeAssistant, config: Dict[str, Any]):
         """Initialize the connection.
-        
+
         Args:
             hass: HomeAssistant instance
             config: Connection configuration
@@ -58,6 +67,15 @@ class AprilaireConnectionBase(ABC):
         self._buffer = ""
         self._received_messages = []  # Store received messages
         self._connect_error_count = 0
+        # v0.3.0 future-registry: per-address single-slot future used by
+        # async_send_command_with_response to await the read loop resolving
+        # the matching response. Eliminates the racy "clear messages then
+        # poll" pattern and makes parallel per-device commands safe.
+        self._pending: Dict[int, asyncio.Future] = {}
+        # Serializes the WRITE side so two coroutines can't interleave
+        # bytes mid-command. The WAIT for response happens outside this
+        # lock so requests to different devices can overlap on the bus.
+        self._send_lock = asyncio.Lock()
 
     @property
     def state(self) -> str:
@@ -142,7 +160,110 @@ class AprilaireConnectionBase(ABC):
     @abstractmethod
     async def async_send_command(self, command: str) -> Optional[str]:
         """Send a command to the thermostat."""
-        
+
+    def _try_resolve_pending(self, line: str) -> None:
+        """If `line` matches an in-flight request, resolve its future.
+
+        Called from the read loop for every parsed message. Address-based
+        single-slot matching: whatever response comes back first for an
+        address with a pending request satisfies that request. This mirrors
+        the prior fallback behavior (matched the first SN<addr>... line)
+        and handles oddballs like ID? whose response code (``MODEL#``)
+        doesn't match the request code (``ID``).
+
+        Spontaneous broadcasts arriving while a request is pending will
+        also resolve that request. That's an acceptable trade-off: in
+        practice broadcasts are rare and command round-trips are fast
+        (~50ms), so the window for collision is tiny.
+        """
+        match = _ADDRESS_RE.match(line)
+        if not match:
+            return
+        try:
+            address = int(match.group(1))
+        except ValueError:  # pragma: no cover  (regex captures \d+)
+            return
+        future = self._pending.get(address)
+        if future is None or future.done():
+            return
+        future.set_result(line)
+
+    def _cancel_all_pending(self) -> None:
+        """Cancel any in-flight request futures on disconnect/error."""
+        for address, future in list(self._pending.items()):
+            if not future.done():
+                future.cancel()
+        self._pending.clear()
+
+    async def async_send_command_with_response(
+        self, command: str, timeout: float = 3.0
+    ) -> Optional[str]:
+        """Send `command` and await the matching response line.
+
+        Uses the per-address future registry: registers a future, sends
+        the command (serialized via _send_lock), waits up to `timeout`
+        seconds for the read loop to resolve it, cleans up on the way out.
+
+        Returns the raw response line (including SN<addr> prefix and any
+        location name) or None on timeout / send failure.
+
+        For non-SN<addr>-prefixed commands (e.g. the global ``SN?`` probe
+        used in discovery), falls through to send-only — the caller is
+        expected to read the response itself via get_received_messages().
+        """
+        if not self.is_connected():
+            _LOGGER.error("Cannot send command, not connected")
+            return None
+
+        match = _COMMAND_RE.match(command.strip())
+        if not match:
+            # Send-only: caller handles response collection (e.g. SN? probe).
+            try:
+                await self.async_send_command(command)
+            except Exception as err:  # pylint: disable=broad-except
+                _LOGGER.error("Error sending command: %s", err)
+            return None
+
+        try:
+            address = int(match.group(1))
+        except ValueError:  # pragma: no cover  (regex captures \d+)
+            return None
+
+        # If something is already pending for this address, wait for it to
+        # complete before we send our own — RS-485 is single-master and
+        # interleaving requests to the same device on the wire would mix
+        # up correlation.
+        existing = self._pending.get(address)
+        if existing is not None and not existing.done():
+            try:
+                await existing
+            except (asyncio.CancelledError, asyncio.TimeoutError):
+                pass
+
+        future: asyncio.Future = self.hass.loop.create_future()
+        self._pending[address] = future
+
+        try:
+            try:
+                async with self._send_lock:
+                    await self.async_send_command(command)
+            except Exception as err:  # pylint: disable=broad-except
+                _LOGGER.error("Error sending command: %s", err)
+                return None
+
+            try:
+                return await asyncio.wait_for(future, timeout=timeout)
+            except asyncio.TimeoutError:
+                _LOGGER.warning("No response received for command: %s", command.strip())
+                return None
+            except asyncio.CancelledError:
+                return None
+        finally:
+            # Always pop our own slot — but don't clobber a different
+            # future that happens to have replaced ours.
+            if self._pending.get(address) is future:
+                self._pending.pop(address, None)
+
     async def async_start_reading(self) -> None:
         """Start the continuous reading task."""
         if self._read_task is not None and not self._read_task.done():
@@ -226,10 +347,13 @@ class AprilaireConnectionBase(ABC):
                     _LOGGER.debug("Received message: %s", line)
                     # Store received message
                     self._received_messages.append(line)
-                    
+
+                    # Resolve any in-flight request awaiting this address.
+                    self._try_resolve_pending(line)
+
                     if self._message_callback is not None:
                         self._message_callback(line)
-                        
+
                     # Notify using Home Assistant dispatcher
                     async_dispatcher_send(
                         self.hass, SIGNAL_MESSAGE_RECEIVED, self.config, line
@@ -358,16 +482,18 @@ class SerialServerConnection(AprilaireConnectionBase):
     async def async_disconnect(self) -> None:
         """Close the connection to the serial server."""
         await self.async_stop_reading()
-        
+        # Unblock any caller still waiting on an in-flight request.
+        self._cancel_all_pending()
+
         if self._writer is not None:
             try:
                 self._writer.close()
             except Exception as err:  # pylint: disable=broad-except
                 _LOGGER.error("Error closing telnet connection: %s", err)
-                
+
             self._reader = None
             self._writer = None
-            
+
         self.state = STATE_DISCONNECTED
         _LOGGER.debug("Disconnected from serial server")
     
@@ -418,85 +544,8 @@ class SerialServerConnection(AprilaireConnectionBase):
             await self.async_reconnect()
             return None
 
-    async def async_send_command_with_response(self, command: str, timeout: float = 3.0) -> Optional[str]:
-        """Send a command and wait for response with improved handling.
+    # async_send_command_with_response now lives on AprilaireConnectionBase.
 
-        Args:
-            command: Command to send
-            timeout: Timeout in seconds
-
-        Returns:
-            Response string if received, None otherwise
-        """
-        if not self.is_connected():
-            _LOGGER.error("Cannot send command, not connected")
-            return None
-
-        try:
-            # Clear any previous received messages
-            self._received_messages.clear()
-
-            # Ensure command ends with carriage return
-            if not command.endswith("\r"):
-                command += "\r"
-
-            _LOGGER.debug("Sending command: %s", command.strip())
-            self._writer.write(command)
-            await self._writer.drain()
-
-            # Get device ID from command if it's a device-specific command
-            device_id = None
-            if command.startswith("SN"):
-                # Extract numeric device ID from command (SNx)
-                parts = command.strip().split(" ")[0]
-                if len(parts) > 2:  # SN followed by numbers
-                    try:
-                        device_id = int(parts[2:])
-                    except ValueError:  # pragma: no cover  (caller always passes SN<digits>)
-                        device_id = None
-
-            # Extract the expected command name once (e.g. "CR" from "SN1 CR=NORMAL\r").
-            expected_cmd = None
-            cmd_parts = command.strip().split(" ")
-            if len(cmd_parts) > 1:
-                expected_cmd = cmd_parts[1].split("=")[0].rstrip("?")
-
-            import re
-            device_re = re.compile(r"^SN(\d+)")
-
-            # Wait for response with timeout
-            start_time = time.time()
-            while (time.time() - start_time) < timeout:
-                if self._received_messages:
-                    # Iterate over a snapshot so .remove() inside the loop is safe.
-                    for msg in list(self._received_messages):
-                        if device_id is None:
-                            self._received_messages.remove(msg)
-                            return msg
-                        match = device_re.match(msg)
-                        if not match or int(match.group(1)) != device_id:
-                            continue
-                        if expected_cmd and expected_cmd in msg:
-                            self._received_messages.remove(msg)
-                            return msg
-
-                    # No exact command match — fall back to first response from this device.
-                    for msg in list(self._received_messages):
-                        match = device_re.match(msg)
-                        if match and int(match.group(1)) == device_id:
-                            self._received_messages.remove(msg)
-                            return msg
-
-                await asyncio.sleep(0.1)
-
-            _LOGGER.warning("No response received for command: %s", command.strip())
-            return None
-
-        except Exception as err:
-            _LOGGER.error("Error sending command: %s", err)
-            self.state = STATE_ERROR
-            await self.async_reconnect()
-            return None
 
 class SerialProtocol(asyncio.Protocol):
     """Serial protocol for reading and writing."""
@@ -607,12 +656,14 @@ class ComPortConnection(AprilaireConnectionBase):
     async def async_disconnect(self) -> None:
         """Close the connection to the COM port."""
         await self.async_stop_reading()
-        
+        # Unblock any caller still waiting on an in-flight request.
+        self._cancel_all_pending()
+
         if self._serial_transport is not None:
             self._serial_transport.close()
             self._serial_transport = None
             self._serial_protocol = None
-            
+
         self.state = STATE_DISCONNECTED
         _LOGGER.debug("Disconnected from COM port")
         

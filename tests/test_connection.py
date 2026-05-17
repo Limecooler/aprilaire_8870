@@ -421,13 +421,16 @@ async def test_send_with_response_not_connected(hass) -> None:
 
 
 async def test_send_with_response_matches_device_and_command(hass) -> None:
+    """Future registry resolves on matching address."""
     conn = _make_serial_conn(hass)
     conn._state = STATE_CONNECTED
     conn._writer = _FakeWriter()
 
     async def deliver() -> None:
         await asyncio.sleep(0.05)
+        # Mimic the read loop: append AND resolve the matching pending future.
         conn._received_messages.append("SN1 TEMP=72F")
+        conn._try_resolve_pending("SN1 TEMP=72F")
 
     asyncio.create_task(deliver())
     result = await conn.async_send_command_with_response("SN1 TEMP?", timeout=1.0)
@@ -435,7 +438,11 @@ async def test_send_with_response_matches_device_and_command(hass) -> None:
 
 
 async def test_send_with_response_lenient_fallback(hass) -> None:
-    """Response from the correct device but wrong command is still returned."""
+    """Any response from the correct address satisfies the pending request.
+
+    Address-only matching is intentional: handles oddball commands like ID?
+    whose response code (MODEL#) doesn't match the request code.
+    """
     conn = _make_serial_conn(hass)
     conn._state = STATE_CONNECTED
     conn._writer = _FakeWriter()
@@ -443,6 +450,7 @@ async def test_send_with_response_lenient_fallback(hass) -> None:
     async def deliver() -> None:
         await asyncio.sleep(0.05)
         conn._received_messages.append("SN1 OTHER=X")
+        conn._try_resolve_pending("SN1 OTHER=X")
 
     asyncio.create_task(deliver())
     result = await conn.async_send_command_with_response("SN1 TEMP?", timeout=1.0)
@@ -450,18 +458,17 @@ async def test_send_with_response_lenient_fallback(hass) -> None:
 
 
 async def test_send_with_response_no_device_id(hass) -> None:
+    """Non-SN<digits> commands take the send-only fallback path."""
     conn = _make_serial_conn(hass)
     conn._state = STATE_CONNECTED
     conn._writer = _FakeWriter()
 
-    async def deliver() -> None:
-        await asyncio.sleep(0.05)
-        conn._received_messages.append("ANYTHING\r")
-
-    asyncio.create_task(deliver())
-    # "SN" prefix without digits → device_id stays None → first message returned.
-    result = await conn.async_send_command_with_response("SN ID?", timeout=1.0)
-    assert result == "ANYTHING\r"
+    # "SN ID?" doesn't match the (address, cmd) command-parse regex, so the
+    # send-only path is used and returns None. The caller is expected to
+    # read responses out of get_received_messages() themselves (this is how
+    # the SN? discovery probe in config_flow works).
+    result = await conn.async_send_command_with_response("SN ID?", timeout=0.05)
+    assert result is None
 
 
 async def test_send_with_response_no_message(hass) -> None:
@@ -723,22 +730,50 @@ async def test_connection_manager_reconnects_cached(hass) -> None:
     fake.async_connect.assert_called_once()
 
 
-async def test_send_with_response_skips_mismatched_command_finds_match(hass) -> None:
-    """Cover the `continue` branch in async_send_command_with_response."""
+async def test_send_with_response_ignores_other_address(hass) -> None:
+    """A response for a different address doesn't satisfy our future."""
     conn = _make_serial_conn(hass)
     conn._state = STATE_CONNECTED
     conn._writer = _FakeWriter()
 
     async def deliver() -> None:
         await asyncio.sleep(0.05)
-        # Both messages arrive after the initial clear inside the method.
-        # SN9 is from a different device → hits the `continue` branch.
-        conn._received_messages.append("SN9 NOISE=1")
-        conn._received_messages.append("SN1 TEMP=72F")
+        # SN9 — different address, no pending future for it. Ignored.
+        conn._try_resolve_pending("SN9 NOISE=1")
+        # SN1 — matches our request, resolves the future.
+        conn._try_resolve_pending("SN1 TEMP=72F")
 
     asyncio.create_task(deliver())
     result = await conn.async_send_command_with_response("SN1 TEMP?", timeout=1.0)
     assert result == "SN1 TEMP=72F"
+
+
+async def test_try_resolve_pending_no_match_when_no_pending(hass) -> None:
+    """Stray messages with no pending request are no-ops."""
+    conn = _make_serial_conn(hass)
+    # No pending future for any address.
+    conn._try_resolve_pending("SN1 TEMP=72F")
+    # Garbage in shouldn't raise.
+    conn._try_resolve_pending("not a thermostat line")
+    conn._try_resolve_pending("")
+
+
+async def test_cancel_all_pending_unblocks_waiters(hass) -> None:
+    """Disconnect-time cancellation unblocks any in-flight requests."""
+    conn = _make_serial_conn(hass)
+    conn._state = STATE_CONNECTED
+    conn._writer = _FakeWriter()
+
+    async def send_then_check():
+        return await conn.async_send_command_with_response("SN1 TEMP?", timeout=2.0)
+
+    task = asyncio.create_task(send_then_check())
+    await asyncio.sleep(0.05)  # let the request register
+    assert 1 in conn._pending
+    conn._cancel_all_pending()
+    result = await task
+    assert result is None
+    assert 1 not in conn._pending
 
 
 async def test_connection_manager_serial_server(hass) -> None:
