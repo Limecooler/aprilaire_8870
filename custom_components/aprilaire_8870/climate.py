@@ -210,19 +210,48 @@ class AprilaireClimate(CoordinatorEntity, ClimateEntity):
 
     @property
     def hvac_action(self) -> Optional[HVACAction]:
-        """Return the current HVAC action."""
+        """Return the current HVAC action derived from the relay-status byte.
+
+        The 8870 reports relay state as ``<RELAY><+|->`` segments concatenated
+        together — e.g. ``G+Y1+W1-Y2-W2-B-O+`` means fan on, Y1 (cool stage 1)
+        on, W1 (heat stage 1) off, etc. Earlier code checked substrings like
+        ``"+W1" in relay_status`` which produced a false positive whenever a
+        preceding relay's ``+`` sign was followed by ``W1`` — most visibly
+        when Y1 was active (``Y1+W1`` makes ``+W1`` match even though W1 is
+        actually off), so every cooling cycle was misreported as heating.
+        """
         device_data = self.coordinator.data.get(self._device_id, {})
-        relay_status = device_data.get("hvac_status", "")
-        
-        # Determine action based on relay status
-        if relay_status:
-            if "+W1" in relay_status or "+W2" in relay_status:
+        relay_status: str = device_data.get("hvac_status") or ""
+
+        if not relay_status:
+            return HVACAction.IDLE
+
+        def is_on(relay: str) -> bool:
+            """Return True only if the named relay is followed by '+'."""
+            idx = relay_status.find(relay)
+            if idx < 0:
+                return False
+            sign_idx = idx + len(relay)
+            if sign_idx >= len(relay_status):
+                return False
+            return relay_status[sign_idx] == "+"
+
+        heat_strip = is_on("W1") or is_on("W2")
+        compressor = is_on("Y1") or is_on("Y2")
+        fan = is_on("G")
+
+        if heat_strip:
+            return HVACAction.HEATING
+        if compressor:
+            # On a heat pump in HEAT mode the compressor runs to deliver heat
+            # via the reversing valve, so a compressor-on/no-strip state should
+            # render as HEATING. Cool/Auto/Off all treat it as cooling.
+            mode = device_data.get("mode")
+            if mode in ("HEAT", "EMHT"):
                 return HVACAction.HEATING
-            if "+Y1" in relay_status or "+Y2" in relay_status:
-                return HVACAction.COOLING
-            if "+G" in relay_status:
-                return HVACAction.FAN
-                
+            return HVACAction.COOLING
+        if fan:
+            return HVACAction.FAN
         return HVACAction.IDLE
 
     @property

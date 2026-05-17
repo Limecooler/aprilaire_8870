@@ -147,18 +147,28 @@ def test_hvac_mode_unknown_defaults_to_off() -> None:
     assert c.hvac_mode == HVACMode.OFF
 
 
-def test_hvac_action_heating() -> None:
-    c = make_climate(data={"1": {"hvac_status": "G+W1+Y-W-B-O-"}})
+def test_hvac_action_heating_w1_on() -> None:
+    """Heat-strip W1 active → HEATING regardless of mode."""
+    c = make_climate(data={"1": {"hvac_status": "G+Y1-W1+Y2-W2-B-O-", "mode": "HEAT"}})
     assert c.hvac_action == HVACAction.HEATING
 
 
-def test_hvac_action_cooling() -> None:
-    c = make_climate(data={"1": {"hvac_status": "G+Y1+W-Y-W-B-O-"}})
+def test_hvac_action_cooling_y1_on_in_cool_mode() -> None:
+    """Y1 active in cool mode → COOLING. Regression: previously the
+    substring '+W1' matched 'Y1+W1' falsely and returned HEATING."""
+    c = make_climate(data={"1": {"hvac_status": "G+Y1+W1-Y2-W2-B-O+", "mode": "COOL"}})
     assert c.hvac_action == HVACAction.COOLING
 
 
+def test_hvac_action_heat_pump_compressor_in_heat_mode() -> None:
+    """On a heat pump the compressor (Y) is the heat source in HEAT mode."""
+    c = make_climate(data={"1": {"hvac_status": "G+Y1+W1-Y2-W2-B+O-", "mode": "HEAT"}})
+    assert c.hvac_action == HVACAction.HEATING
+
+
 def test_hvac_action_fan_only() -> None:
-    c = make_climate(data={"1": {"hvac_status": "+G+Y-W-Y-W-B-O-"}})
+    """G active, no compressor or heat → FAN."""
+    c = make_climate(data={"1": {"hvac_status": "G+Y1-W1-Y2-W2-B-O-", "mode": "FAN"}})
     assert c.hvac_action == HVACAction.FAN
 
 
@@ -167,9 +177,22 @@ def test_hvac_action_idle_when_no_status() -> None:
     assert c.hvac_action == HVACAction.IDLE
 
 
-def test_hvac_action_idle_when_status_empty_string() -> None:
-    c = make_climate(data={"1": {"hvac_status": "G-Y-W-Y-W-B-O-"}})
+def test_hvac_action_idle_when_all_relays_off() -> None:
+    """Reversing valve flipped (B+ or O+) on its own is NOT activity."""
+    c = make_climate(data={"1": {"hvac_status": "G-Y1-W1-Y2-W2-B+O-", "mode": "COOL"}})
     assert c.hvac_action == HVACAction.IDLE
+
+
+def test_hvac_action_w2_alone_means_heating() -> None:
+    """W2 (heat stage 2) active should be heating even without W1."""
+    c = make_climate(data={"1": {"hvac_status": "G+Y1-W1-Y2-W2+B-O-", "mode": "HEAT"}})
+    assert c.hvac_action == HVACAction.HEATING
+
+
+def test_hvac_action_y2_alone_in_auto_mode_is_cooling() -> None:
+    """Y2 active in AUTO mode (non-heat) → COOLING."""
+    c = make_climate(data={"1": {"hvac_status": "G+Y1-W1-Y2+W2-B-O+", "mode": "AUTO"}})
+    assert c.hvac_action == HVACAction.COOLING
 
 
 def test_fan_mode_default_auto() -> None:
