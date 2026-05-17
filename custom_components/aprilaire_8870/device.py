@@ -48,6 +48,12 @@ from .const import (
 )
 from .protocol import AprilaireProtocol
 
+# After this many consecutive timeouts on the same optional command we mark
+# it as unsupported for that device and stop polling it until the next
+# connection. Three gives the bus a couple of chances to recover from
+# transient glitches before we give up.
+_UNSUPPORTED_THRESHOLD = 3
+
 _LOGGER = logging.getLogger(__name__)
 
 
@@ -115,6 +121,15 @@ class AprilaireDevice:
         self._cos_enabled = False
         self._cos_flags = set()
 
+        # Per-device tracking of optional commands the thermostat doesn't
+        # respond to. After UNSUPPORTED_THRESHOLD consecutive failures we
+        # stop sending the command to this device — it'll be retried on
+        # the next connection (state is cleared via reset_unsupported).
+        # Keeps the bus quiet on alarm queries that older firmware doesn't
+        # implement.
+        self._optional_failure_counts: Dict[str, int] = {}
+        self._unsupported_commands: Set[str] = set()
+
     def update_from_real_device(self, real_device):
         """Update properties from a fully initialized device.
         
@@ -158,21 +173,27 @@ class AprilaireDevice:
         
         # Then handle optional commands that can be skipped if they fail
         for cmd in optional_commands:
+            if cmd in self._unsupported_commands:
+                continue
             try:
                 response = await self._send_command_with_retry(
-                    f"SN{self.address} {cmd}?", 
+                    f"SN{self.address} {cmd}?",
                     retries=1,  # Reduced retries for optional commands
                     allow_skip=True  # Allow skipping on failure
                 )
-                
+
                 # Process the response to update state
                 if response:
                     self._process_state_response(cmd, response)
-                    
+                    self._optional_failure_counts.pop(cmd, None)
+                else:
+                    self._note_optional_failure(cmd)
+
                 # Small delay between commands
                 await asyncio.sleep(0.3)
             except Exception as err:
                 _LOGGER.debug(f"Skipping optional command {cmd} after failure: {err}")
+                self._note_optional_failure(cmd)
                 continue
 
     @property
@@ -464,6 +485,42 @@ class AprilaireDevice:
 
         return None
 
+    def _note_optional_failure(self, cmd_name: str) -> None:
+        """Track a consecutive failure on an optional command.
+
+        Once we've timed out ``_UNSUPPORTED_THRESHOLD`` times in a row,
+        mark the command as unsupported on this device and stop polling
+        it. The state is per-device and per-connection: it'll get cleared
+        on the next reconnect via ``reset_unsupported_commands``.
+        """
+        if cmd_name in self._unsupported_commands:
+            return
+        count = self._optional_failure_counts.get(cmd_name, 0) + 1
+        self._optional_failure_counts[cmd_name] = count
+        if count >= _UNSUPPORTED_THRESHOLD:
+            self._unsupported_commands.add(cmd_name)
+            self._optional_failure_counts.pop(cmd_name, None)
+            _LOGGER.info(
+                "Marking %s as unsupported on thermostat %s after %d consecutive timeouts; "
+                "skipping in future polls until next reconnect.",
+                cmd_name, self.address, count,
+            )
+
+    def reset_unsupported_commands(self) -> None:
+        """Forget which optional commands were marked unsupported.
+
+        Called on a fresh connection so a firmware update that adds
+        support for a previously-failing command starts working again
+        without requiring a HA restart.
+        """
+        if self._unsupported_commands or self._optional_failure_counts:
+            _LOGGER.debug(
+                "Resetting unsupported-command tracking for thermostat %s "
+                "(was: %s)", self.address, sorted(self._unsupported_commands),
+            )
+        self._unsupported_commands.clear()
+        self._optional_failure_counts.clear()
+
     async def async_update(self) -> bool:
         """Update device state by querying the thermostat with error handling."""
         if not self.available:
@@ -526,9 +583,13 @@ class AprilaireDevice:
             ]
 
             for cmd_name, cmd in optional_commands:
+                if cmd_name in self._unsupported_commands:
+                    continue
                 response = await self._query_with_retries(cmd, retries=1, timeout=2.0)
                 if response is None:
+                    self._note_optional_failure(cmd_name)
                     continue
+                self._optional_failure_counts.pop(cmd_name, None)
                 if cmd_name == "HUM":
                     self._state["humidity"] = self._parse_humidity(response)
                 elif cmd_name == "OT":

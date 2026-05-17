@@ -670,3 +670,126 @@ async def test_process_cos_messages_outer_exception() -> None:
     # Call the unbound coroutine.
     from custom_components.aprilaire_8870.coordinator import AprilaireDataUpdateCoordinator
     await AprilaireDataUpdateCoordinator._process_cos_messages(coord_obj)
+
+
+# ---- unsolicited-message listener (v0.2.7) --------------------------------
+
+
+def _make_dev_for_unsolicited(address: int) -> MagicMock:
+    """Stand-in device that mutates _state via _process_state_response."""
+    state = {"temperature": None, "mode": None, "available": True}
+
+    def process(command, response):
+        if "=" not in response:
+            return
+        value = response.split("=", 1)[1].strip()
+        if command == "TEMP":
+            state["temperature"] = float(value.rstrip("F"))
+        elif command == "MODE":
+            state["mode"] = value
+
+    dev = MagicMock()
+    dev.address = address
+    dev.available = True
+    dev._process_state_response = MagicMock(side_effect=process)
+    dev.get_state = MagicMock(side_effect=lambda: dict(state))
+    return dev
+
+
+async def test_handle_bus_message_updates_state_for_short_code(hass) -> None:
+    """Short-form response code ``T=`` maps to TEMP and updates state."""
+    dev = _make_dev_for_unsolicited(3)
+    coord = make_coord(hass, devices={3: dev})
+    coord.async_update_listeners = MagicMock()
+
+    coord._handle_bus_message(coord.connection.config, "SN3Master Bedroom  T=76F")
+
+    dev._process_state_response.assert_called_once_with("TEMP", "TEMP=76F")
+    assert coord.data["3"]["temperature"] == 76.0
+    coord.async_update_listeners.assert_called_once()
+
+
+async def test_handle_bus_message_updates_state_for_multi_letter_code(hass) -> None:
+    """Multi-letter codes like HVAC pass through unchanged."""
+    dev = MagicMock()
+    dev.address = 5
+    dev.available = True
+    dev._process_state_response = MagicMock()
+    dev.get_state = MagicMock(return_value={"hvac_status": "G+Y1-W1-Y2-W2-B+O-"})
+    coord = make_coord(hass, devices={5: dev})
+    coord.async_update_listeners = MagicMock()
+
+    coord._handle_bus_message(
+        coord.connection.config, "SN5Office  HVAC=G+Y1-W1-Y2-W2-B+O-"
+    )
+
+    dev._process_state_response.assert_called_once_with(
+        "HVAC", "HVAC=G+Y1-W1-Y2-W2-B+O-"
+    )
+    assert coord.data["5"]["hvac_status"] == "G+Y1-W1-Y2-W2-B+O-"
+
+
+async def test_handle_bus_message_ignores_unknown_address(hass) -> None:
+    dev = _make_dev_for_unsolicited(1)
+    coord = make_coord(hass, devices={1: dev})
+    coord.async_update_listeners = MagicMock()
+    coord._handle_bus_message(coord.connection.config, "SN99Ghost  T=70F")
+    dev._process_state_response.assert_not_called()
+    coord.async_update_listeners.assert_not_called()
+
+
+async def test_handle_bus_message_ignores_unknown_code(hass) -> None:
+    dev = _make_dev_for_unsolicited(1)
+    coord = make_coord(hass, devices={1: dev})
+    coord.async_update_listeners = MagicMock()
+    coord._handle_bus_message(coord.connection.config, "SN1Foo  XYZZY=42")
+    dev._process_state_response.assert_not_called()
+
+
+async def test_handle_bus_message_ignores_other_connection(hass) -> None:
+    """A message from a different aprilaire connection must not cross over."""
+    dev = _make_dev_for_unsolicited(1)
+    coord = make_coord(hass, devices={1: dev})
+    coord.async_update_listeners = MagicMock()
+    coord._handle_bus_message({"other": "config"}, "SN1Foo  T=70F")
+    dev._process_state_response.assert_not_called()
+
+
+async def test_handle_bus_message_silent_when_state_unchanged(hass) -> None:
+    """If the merged data matches what we already have, no listener notify."""
+    dev = MagicMock()
+    dev.address = 1
+    dev.available = True
+    dev._process_state_response = MagicMock()
+    dev.get_state = MagicMock(return_value={"temperature": 70.0})
+    coord = make_coord(hass, devices={1: dev})
+    coord.data["1"] = {"temperature": 70.0, "available": True}
+    coord.async_update_listeners = MagicMock()
+
+    coord._handle_bus_message(coord.connection.config, "SN1  T=70F")
+    coord.async_update_listeners.assert_not_called()
+
+
+async def test_handle_bus_message_ignores_garbage(hass) -> None:
+    dev = _make_dev_for_unsolicited(1)
+    coord = make_coord(hass, devices={1: dev})
+    coord._handle_bus_message(coord.connection.config, "")
+    coord._handle_bus_message(coord.connection.config, None)  # type: ignore[arg-type]
+    coord._handle_bus_message(coord.connection.config, "nothing useful here")
+    dev._process_state_response.assert_not_called()
+
+
+async def test_connection_reconnect_resets_unsupported_commands(hass) -> None:
+    """When the bus reconnects, every device gets its unsupported set cleared."""
+    dev1 = MagicMock()
+    dev1.reset_unsupported_commands = MagicMock()
+    dev2 = MagicMock()
+    dev2.reset_unsupported_commands = MagicMock()
+    coord = make_coord(hass, devices={1: dev1, 2: dev2})
+    coord._connection_state = False  # currently disconnected
+
+    coord._connection_state_changed(True)
+
+    dev1.reset_unsupported_commands.assert_called_once()
+    dev2.reset_unsupported_commands.assert_called_once()
+

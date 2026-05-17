@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import traceback
 from datetime import timedelta
 from typing import Any, Dict, List, Optional, Set
@@ -13,6 +14,7 @@ from homeassistant.helpers.storage import Store
 from homeassistant.util import dt as dt_util
 from homeassistant.helpers.dispatcher import async_dispatcher_connect
 
+from .connection import SIGNAL_MESSAGE_RECEIVED
 from .const import (
     DOMAIN,
     DEFAULT_UPDATE_INTERVAL,
@@ -25,8 +27,15 @@ from .const import (
     COS_FLAG_FAN,
     COS_FLAG_ALARMS,
     COS_FLAG_ERRORS,
+    RESPONSE_CODE_TO_COMMAND,
     SIGNAL_CONNECTION_STATE_CHANGED,
 )
+
+# Parses any prefixed thermostat response: ``SN<addr>[<name with spaces>]
+#  <CMD>=<value>``. Group 1 = address (digits), group 2 = response code
+# (TEMP shows as "T", MODE as "M", FAN as "F" — these are mapped via
+# RESPONSE_CODE_TO_COMMAND), group 3 = value.
+_UNSOLICITED_RE = re.compile(r"^SN(\d+).*?\s+([A-Z][A-Z0-9]*)=(.*)$")
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -107,6 +116,16 @@ class AprilaireDataUpdateCoordinator(DataUpdateCoordinator):
         # Register for connection state change events
         self._connection_state_unsub = async_dispatcher_connect(
             hass, SIGNAL_CONNECTION_STATE_CHANGED, self._handle_connection_state_change
+        )
+
+        # Listen for any message that arrives on the bus — these come in
+        # for two reasons: (a) responses to our own polls, and (b)
+        # unsolicited COS-style broadcasts when someone touches the
+        # thermostat directly. We re-route both into device state so the
+        # UI updates in real time, regardless of whether the COS flag
+        # subscription was accepted by the device.
+        self._message_unsub = async_dispatcher_connect(
+            hass, SIGNAL_MESSAGE_RECEIVED, self._handle_bus_message
         )
 
         # Explicitly register callback with the connection
@@ -229,6 +248,13 @@ class AprilaireDataUpdateCoordinator(DataUpdateCoordinator):
             # state; we don't kick off an extra refresh here to avoid racing the
             # entry-setup / unload paths that toggle connection state.
             _LOGGER.debug("Connection established — awaiting next scheduled refresh")
+            # Reset per-device unsupported-command tracking — a firmware update
+            # that happened over the bus reset could add support we'd otherwise
+            # never re-discover.
+            for device in (self.devices or {}).values():
+                reset = getattr(device, "reset_unsupported_commands", None)
+                if callable(reset):
+                    reset()
         else:
             # Connection lost, mark devices as unavailable
             _LOGGER.debug("Connection lost, marking devices as unavailable")
@@ -560,11 +586,82 @@ class AprilaireDataUpdateCoordinator(DataUpdateCoordinator):
         else:
             _LOGGER.error("Device not found: %s", device_id)
 
+    @callback
+    def _handle_bus_message(self, config: Any, line: str) -> None:
+        """Decode any inbound thermostat message into device state.
+
+        Fired by the connection's read loop for every parsed message.
+        Solicited (response to one of our polls) and unsolicited
+        (broadcast from a user-side change) messages share the same
+        wire format, so a single handler suffices. State updates are
+        idempotent — if the poller also handles the same response we
+        just write the same value twice, no harm done.
+
+        Only messages whose ``config`` matches the connection this
+        coordinator owns are processed (lets multiple aprilaire entries
+        coexist without crosstalk).
+        """
+        if not line or not isinstance(line, str):
+            return
+        if self.connection is not None and config is not getattr(
+            self.connection, "config", config
+        ):
+            # Different connection — ignore.
+            return
+        match = _UNSOLICITED_RE.match(line)
+        if not match:
+            return
+        address_str, code, value = match.groups()
+        try:
+            address = int(address_str)
+        except ValueError:
+            return
+        device = self.devices.get(address)
+        if device is None:
+            return
+        command = RESPONSE_CODE_TO_COMMAND.get(code)
+        if command is None:
+            return
+        # Reconstruct a "<CMD>=<value>" string for _process_state_response,
+        # which splits on the first "=" and uses everything before/after.
+        try:
+            device._process_state_response(command, f"{command}={value}")
+        except Exception as err:  # pragma: no cover - defensive
+            _LOGGER.debug(
+                "Error applying unsolicited %s update for thermostat %s: %s",
+                command, address, err,
+            )
+            return
+
+        # Sync the coordinator's data view so subscribed entities pick
+        # up the change on the next listener notification.
+        device_id_str = str(address)
+        try:
+            new_state = device.get_state()
+        except Exception:  # pragma: no cover - defensive
+            return
+        if new_state is None:
+            return
+        if self.data is None:
+            self.data = {}
+        existing = self.data.get(device_id_str) or {}
+        merged = {**existing, **new_state, "available": device.available}
+        merged.pop("from_cache", None)
+        # Only notify listeners when something actually changed — avoids
+        # spamming entity state writes when the unsolicited message just
+        # echoes the value we already had.
+        if merged == existing:
+            return
+        self.data[device_id_str] = merged
+        self.async_update_listeners()
+
     async def async_shutdown(self) -> None:
         """Shut down the coordinator."""
         # Unsubscribe from dispatcher connections
         if hasattr(self, "_connection_state_unsub") and self._connection_state_unsub:
             self._connection_state_unsub()
+        if hasattr(self, "_message_unsub") and self._message_unsub:
+            self._message_unsub()
             
         # Save final state
         await self._async_save_state()

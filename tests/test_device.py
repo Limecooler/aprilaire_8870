@@ -48,6 +48,43 @@ def test_get_state_returns_copy() -> None:
     assert dev._state.get("temperature") != 99
 
 
+# ---- unsupported-command tracking (v0.2.7) ---------------------------------
+
+
+def test_note_optional_failure_marks_unsupported_after_threshold() -> None:
+    dev, _, _ = make_device()
+    for _ in range(3):
+        dev._note_optional_failure("FLTALM")
+    assert "FLTALM" in dev._unsupported_commands
+    # Counter cleared once the command is marked unsupported.
+    assert "FLTALM" not in dev._optional_failure_counts
+
+
+def test_note_optional_failure_below_threshold_doesnt_mark() -> None:
+    dev, _, _ = make_device()
+    dev._note_optional_failure("FLTALM")
+    dev._note_optional_failure("FLTALM")
+    assert "FLTALM" not in dev._unsupported_commands
+    assert dev._optional_failure_counts["FLTALM"] == 2
+
+
+def test_note_optional_failure_no_op_once_unsupported() -> None:
+    dev, _, _ = make_device()
+    dev._unsupported_commands.add("FLTALM")
+    dev._note_optional_failure("FLTALM")
+    # Counter not touched; command stays in unsupported set.
+    assert "FLTALM" not in dev._optional_failure_counts
+
+
+def test_reset_unsupported_commands_clears_state() -> None:
+    dev, _, _ = make_device()
+    dev._unsupported_commands.update({"FLTALM", "WPALM"})
+    dev._optional_failure_counts["ERROR"] = 2
+    dev.reset_unsupported_commands()
+    assert dev._unsupported_commands == set()
+    assert dev._optional_failure_counts == {}
+
+
 def test_get_state_handles_missing_state() -> None:
     dev, _, _ = make_device()
     del dev._state

@@ -35,7 +35,7 @@ DEFAULT_PORT: Final = 23
 DEFAULT_BAUDRATE: Final = 9600
 DEFAULT_SCAN_INTERVAL: Final = 600  # 10 minutes
 DEFAULT_UPDATE_INTERVAL: Final = 600  # 10 minutes
-DEFAULT_FALLBACK_SCAN_INTERVAL: Final = 180  # 3 minutes
+DEFAULT_FALLBACK_SCAN_INTERVAL: Final = 300  # 5 min: backstop for unsolicited COS-style broadcasts
 DEFAULT_COS_VERIFICATION_INTERVAL: Final = 1800  # 30 minutes
 DEFAULT_NAME: Final = "Aprilaire 8870 Thermostat"
 
@@ -220,6 +220,29 @@ CMD_HOLD: Final = "HOLD"               # Set/query network override
 CMD_BIHUM: Final = "BIHUM"             # Query built-in humidity sensor
 CMD_CR: Final = "CR"                   # Set/query command response mode
 CMD_RSM: Final = "RSM"                 # Query connected sensor modules
+
+# Maps the short response codes the 8870 actually emits (e.g. "T=76F" for
+# what was queried as "TEMP?") to the canonical command names used by
+# device._process_state_response. The thermostat also broadcasts these
+# short-code messages unsolicited when the user changes anything on the
+# unit itself, which is what the coordinator's unsolicited-message
+# listener decodes into state updates.
+RESPONSE_CODE_TO_COMMAND: Final = {
+    "T": CMD_TEMP,
+    "M": CMD_MODE,
+    "F": CMD_FAN,
+    "SH": CMD_SH,
+    "SC": CMD_SC,
+    "HVAC": CMD_HVAC,
+    "HOLD": CMD_HOLD,
+    "HUM": CMD_HUM,
+    "OT": CMD_OT,
+    "FLTALM": "FLTALM",
+    "WPALM": "WPALM",
+    "SYSALM": "SYSALM",
+    "DEHALM": "DEHALM",
+    "ERROR": "ERROR",
+}
 
 # COS constant aliases for backward compatibility or alternative naming
 COS_HVAC_RELAYS: Final = COS_FLAG_HVAC_RELAYS
