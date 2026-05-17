@@ -61,7 +61,10 @@
           "temperature_unit": "Temperature Unit",
           "command_retry_count": "Command Retry Count",
           "connection_backoff_max": "Maximum Reconnect Backoff (seconds)",
-          "debug_mode": "Enable Debug Mode"
+          "debug_mode": "Enable Debug Mode",
+          "monitor_alarms": "Poll alarm status each cycle",
+          "monitor_humidity": "Poll humidity sensor each cycle",
+          "monitor_outdoor_temp": "Poll outdoor temperature each cycle"
         }
       }
     }

@@ -12,7 +12,16 @@ from homeassistant.helpers import config_validation as cv, device_registry as dr
 from homeassistant.helpers.typing import ConfigType
 from homeassistant.exceptions import ConfigEntryNotReady
 
-from .const import DOMAIN, PLATFORMS
+from .const import (
+    CONF_MONITOR_ALARMS,
+    CONF_MONITOR_HUMIDITY,
+    CONF_MONITOR_OUTDOOR_TEMP,
+    DEFAULT_MONITOR_ALARMS,
+    DEFAULT_MONITOR_HUMIDITY,
+    DEFAULT_MONITOR_OUTDOOR_TEMP,
+    DOMAIN,
+    PLATFORMS,
+)
 
 CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 from .config_flow import _parse_location_name
@@ -308,7 +317,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         # makes AprilaireDevice.name correct from the first DeviceInfo build,
         # so HA's Name & Assign step shows the user's configured names.
         device_names = entry.data.get("device_names", {})
-        device_manager = AprilaireDeviceManager(coordinator, protocol, device_names=device_names)
+        device_manager = AprilaireDeviceManager(
+            coordinator,
+            protocol,
+            device_names=device_names,
+            monitor_alarms=entry.options.get(CONF_MONITOR_ALARMS, DEFAULT_MONITOR_ALARMS),
+            monitor_humidity=entry.options.get(CONF_MONITOR_HUMIDITY, DEFAULT_MONITOR_HUMIDITY),
+            monitor_outdoor_temp=entry.options.get(CONF_MONITOR_OUTDOOR_TEMP, DEFAULT_MONITOR_OUTDOOR_TEMP),
+        )
         
         # Set the device_manager in the coordinator
         coordinator.device_manager = device_manager

@@ -66,6 +66,9 @@ class AprilaireDevice:
         coordinator: DataUpdateCoordinator,
         protocol: AprilaireProtocol,
         preset_name: Optional[str] = None,
+        monitor_alarms: bool = False,
+        monitor_humidity: bool = True,
+        monitor_outdoor_temp: bool = True,
     ) -> None:
         """Initialize the Aprilaire device.
 
@@ -76,11 +79,22 @@ class AprilaireDevice:
             preset_name: Optional location name discovered during config flow.
                 Used as the initial device name so HA's Name & Assign step
                 shows it before runtime name-discovery refines it.
+            monitor_alarms: If True, poll FLTALM/WPALM/SYSALM/DEHALM/ERROR
+                each cycle. Defaults to False because most firmwares NACK
+                these and they consume the bulk of bus time when polled
+                every cycle. Unsolicited COS broadcasts still flow through
+                regardless of this flag, so a real filter-alarm change
+                still reaches HA via the message listener.
+            monitor_humidity: If True, poll HUM each cycle. Default True.
+            monitor_outdoor_temp: If True, poll OT each cycle. Default True.
         """
         self.address = address
         self.coordinator = coordinator
         self.protocol = protocol
         self.name = preset_name or f"Aprilaire {address}"
+        self.monitor_alarms = monitor_alarms
+        self.monitor_humidity = monitor_humidity
+        self.monitor_outdoor_temp = monitor_outdoor_temp
         self.model = "8870"
         self.firmware_version = None
         self.available = False
@@ -572,15 +586,23 @@ class AprilaireDevice:
                     self._state["cool_setpoint"] = self._parse_temperature(response)
 
             # Optional items - one retry with shorter timeout, allow skipping.
-            optional_commands = [
-                ("HUM", CMD_HUM),
-                ("OT", CMD_OT),
-                ("FLTALM", "FLTALM"),
-                ("WPALM", "WPALM"),
-                ("SYSALM", "SYSALM"),
-                ("DEHALM", "DEHALM"),
-                ("ERROR", "ERROR")
-            ]
+            # Each command group is gated on its own user-controlled toggle
+            # (config_flow options). Alarms default off because most firmwares
+            # NACK them; the unsolicited COS-broadcast listener still picks
+            # up real alarm transitions regardless.
+            optional_commands: List[Tuple[str, str]] = []
+            if self.monitor_humidity:
+                optional_commands.append(("HUM", CMD_HUM))
+            if self.monitor_outdoor_temp:
+                optional_commands.append(("OT", CMD_OT))
+            if self.monitor_alarms:
+                optional_commands.extend([
+                    ("FLTALM", "FLTALM"),
+                    ("WPALM", "WPALM"),
+                    ("SYSALM", "SYSALM"),
+                    ("DEHALM", "DEHALM"),
+                    ("ERROR", "ERROR"),
+                ])
 
             for cmd_name, cmd in optional_commands:
                 if cmd_name in self._unsupported_commands:
@@ -1324,6 +1346,9 @@ class AprilaireDeviceManager:
         coordinator: DataUpdateCoordinator,
         protocol: AprilaireProtocol,
         device_names: Optional[Dict[str, str]] = None,
+        monitor_alarms: bool = False,
+        monitor_humidity: bool = True,
+        monitor_outdoor_temp: bool = True,
     ) -> None:
         """Initialize the device manager.
 
@@ -1334,11 +1359,18 @@ class AprilaireDeviceManager:
                 name discovered during config flow. Used to pre-populate each
                 device's ``name`` so HA's Name & Assign UI shows the user's
                 names from the start.
+            monitor_alarms / monitor_humidity / monitor_outdoor_temp:
+                Forwarded to each new AprilaireDevice; gate which optional
+                command groups are polled. See AprilaireDevice.__init__ for
+                rationale on defaults.
         """
         self.coordinator = coordinator
         self.protocol = protocol
         self.devices = {}  # address -> AprilaireDevice
         self.device_names: Dict[str, str] = dict(device_names or {})
+        self.monitor_alarms = monitor_alarms
+        self.monitor_humidity = monitor_humidity
+        self.monitor_outdoor_temp = monitor_outdoor_temp
 
     async def async_discover_devices(self, connection) -> List[int]:
         """Discover thermostats on the network.
@@ -1407,7 +1439,11 @@ class AprilaireDeviceManager:
         # Create new device, seeding name from config-flow discovery if present.
         preset_name = self.device_names.get(str(address))
         device = AprilaireDevice(
-            address, self.coordinator, self.protocol, preset_name=preset_name
+            address, self.coordinator, self.protocol,
+            preset_name=preset_name,
+            monitor_alarms=self.monitor_alarms,
+            monitor_humidity=self.monitor_humidity,
+            monitor_outdoor_temp=self.monitor_outdoor_temp,
         )
         
         # Initialize device

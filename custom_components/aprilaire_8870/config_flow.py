@@ -41,6 +41,12 @@ from .const import (
     CONF_ENABLE_COMMAND_BATCHING,
     CONF_DEBUG_MODE,
     CONF_CONNECTION_BACKOFF_MAX,
+    CONF_MONITOR_ALARMS,
+    CONF_MONITOR_HUMIDITY,
+    CONF_MONITOR_OUTDOOR_TEMP,
+    DEFAULT_MONITOR_ALARMS,
+    DEFAULT_MONITOR_HUMIDITY,
+    DEFAULT_MONITOR_OUTDOOR_TEMP,
     COMMAND_TIMEOUT,
 )
 from .connection import (
@@ -376,6 +382,21 @@ class AprilaireOptionsFlowHandler(config_entries.OptionsFlow):
                     vol.Required(
                         CONF_DEBUG_MODE,
                         default=combined.get(CONF_DEBUG_MODE, False),
+                    ): cv.boolean,
+                    # Per-poll-cycle traffic toggles. Alarms default off because
+                    # most firmwares NACK them and broadcasts cover real
+                    # transitions; humidity & outdoor temp default on.
+                    vol.Required(
+                        CONF_MONITOR_ALARMS,
+                        default=combined.get(CONF_MONITOR_ALARMS, DEFAULT_MONITOR_ALARMS),
+                    ): cv.boolean,
+                    vol.Required(
+                        CONF_MONITOR_HUMIDITY,
+                        default=combined.get(CONF_MONITOR_HUMIDITY, DEFAULT_MONITOR_HUMIDITY),
+                    ): cv.boolean,
+                    vol.Required(
+                        CONF_MONITOR_OUTDOOR_TEMP,
+                        default=combined.get(CONF_MONITOR_OUTDOOR_TEMP, DEFAULT_MONITOR_OUTDOOR_TEMP),
                     ): cv.boolean,
                 }
             ),

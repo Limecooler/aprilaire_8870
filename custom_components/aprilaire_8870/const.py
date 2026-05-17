@@ -56,9 +56,20 @@ CONF_COMMAND_RETRY_COUNT: Final = "command_retry_count"
 CONF_ENABLE_COMMAND_BATCHING: Final = "enable_command_batching"
 CONF_DEBUG_MODE: Final = "debug_mode"
 CONF_CONNECTION_BACKOFF_MAX: Final = "connection_backoff_max"
+# v0.3.0: opt-in polling toggles for the optional/expensive query groups.
+# Default off for the alarm cluster (FLTALM/WPALM/SYSALM/DEHALM/ERROR) since
+# many firmwares NACK them and they consume the bulk of bus time when polled
+# every cycle. Humidity and outdoor temp default on because they're cheap
+# and answers cleanly on supported devices.
+CONF_MONITOR_ALARMS: Final = "monitor_alarms"
+CONF_MONITOR_HUMIDITY: Final = "monitor_humidity"
+CONF_MONITOR_OUTDOOR_TEMP: Final = "monitor_outdoor_temp"
 
 # Default options values
 DEFAULT_COMMAND_RETRY_COUNT: Final = 3
+DEFAULT_MONITOR_ALARMS: Final = False
+DEFAULT_MONITOR_HUMIDITY: Final = True
+DEFAULT_MONITOR_OUTDOOR_TEMP: Final = True
 
 # COS flag constants
 COS_FLAG_HVAC_RELAYS: Final = "c1"     # HVAC relay status changes

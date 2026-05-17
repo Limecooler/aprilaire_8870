@@ -842,7 +842,13 @@ async def test_async_update_happy_path() -> None:
 
 
 async def test_async_update_with_optional_responses() -> None:
-    dev, conn, _ = make_device()
+    """With monitor_alarms opted in, the alarm queries fire and populate state."""
+    from custom_components.aprilaire_8870.device import AprilaireDevice
+    from custom_components.aprilaire_8870.protocol import AprilaireProtocol
+    from tests.conftest import StubConnection
+    conn = StubConnection({})
+    proto = AprilaireProtocol(connection=conn)
+    dev = AprilaireDevice(1, MagicMock(), proto, monitor_alarms=True)
     dev.available = True
     conn.responses["SN1 TEMP?"] = "SN1 TEMP=72F"
     conn.responses["SN1 MODE?"] = "SN1 MODE=COOL"
@@ -860,6 +866,43 @@ async def test_async_update_with_optional_responses() -> None:
     assert result is True
     assert dev._state["humidity"] == 42
     assert dev._state["filter_alarm"] is True
+
+
+async def test_async_update_skips_alarms_by_default() -> None:
+    """monitor_alarms=False (default) means no alarm queries hit the bus."""
+    dev, conn, _ = make_device()
+    dev.available = True
+    conn.responses["SN1 TEMP?"] = "SN1 TEMP=72F"
+    conn.responses["SN1 MODE?"] = "SN1 MODE=COOL"
+    conn.responses["SN1 SC?"] = "SN1 SC=75F"
+    conn.responses["SN1 HUM?"] = "SN1 HUM=42%"
+    conn.responses["SN1 OT?"] = "SN1 OT=50F"
+    # Alarm responses available — but they should NOT be queried.
+    conn.responses["SN1 FLTALM?"] = "SN1 FLTALM=ON"
+    dev._state["mode"] = "COOL"
+    with patch("custom_components.aprilaire_8870.device.asyncio.sleep", new=AsyncMock()):
+        await dev.async_update()
+    # State did not absorb the alarm value because the query wasn't sent.
+    assert dev._state.get("filter_alarm") is None
+    # Confirm no FLTALM command on the wire.
+    assert not any("FLTALM" in c for c in conn.sent)
+
+
+async def test_async_update_skips_humidity_when_disabled() -> None:
+    """monitor_humidity=False means HUM is skipped."""
+    dev, conn, _ = make_device()
+    dev.monitor_humidity = False
+    dev.available = True
+    conn.responses["SN1 TEMP?"] = "SN1 TEMP=72F"
+    conn.responses["SN1 MODE?"] = "SN1 MODE=COOL"
+    conn.responses["SN1 SC?"] = "SN1 SC=75F"
+    conn.responses["SN1 HUM?"] = "SN1 HUM=42%"
+    conn.responses["SN1 OT?"] = "SN1 OT=50F"
+    dev._state["mode"] = "COOL"
+    with patch("custom_components.aprilaire_8870.device.asyncio.sleep", new=AsyncMock()):
+        await dev.async_update()
+    assert dev._state.get("humidity") is None
+    assert not any("HUM" in c for c in conn.sent)
 
 
 async def test_async_update_retries_then_succeed() -> None:
