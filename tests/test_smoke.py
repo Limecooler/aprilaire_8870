@@ -1,6 +1,14 @@
 """Smoke test to confirm the integration imports cleanly under the test harness."""
 from __future__ import annotations
 
+from pathlib import Path
+
+INTEGRATION_DIR = (
+    Path(__file__).resolve().parent.parent
+    / "custom_components"
+    / "aprilaire_8870"
+)
+
 
 def test_parallel_updates_pinned_to_one() -> None:
     """Every entity platform must serialize updates — RS-485 is single-master."""
@@ -14,10 +22,7 @@ def test_parallel_updates_pinned_to_one() -> None:
 def test_manifest_quality_scale() -> None:
     """Manifest declares the quality scale tier so HA picks it up."""
     import json
-    from pathlib import Path
-    manifest = json.loads(
-        Path("/Users/bill/personal-code/aprilaire_8870/custom_components/aprilaire_8870/manifest.json").read_text()
-    )
+    manifest = json.loads((INTEGRATION_DIR / "manifest.json").read_text())
     assert manifest["quality_scale"] == "gold"
     assert manifest["integration_type"] == "hub"
     assert "loggers" in manifest
@@ -26,10 +31,7 @@ def test_manifest_quality_scale() -> None:
 def test_quality_scale_file_present() -> None:
     """quality_scale.yaml lists per-rule status."""
     import yaml
-    from pathlib import Path
-    data = yaml.safe_load(
-        Path("/Users/bill/personal-code/aprilaire_8870/custom_components/aprilaire_8870/quality_scale.yaml").read_text()
-    )
+    data = yaml.safe_load((INTEGRATION_DIR / "quality_scale.yaml").read_text())
     assert "rules" in data
     # Spot-check key Gold rules.
     assert data["rules"]["diagnostics"] == "done"
@@ -38,8 +40,7 @@ def test_quality_scale_file_present() -> None:
 
 def test_py_typed_marker_present() -> None:
     """Empty py.typed marker file enables type-checker consumption per PEP 561."""
-    from pathlib import Path
-    assert Path("/Users/bill/personal-code/aprilaire_8870/custom_components/aprilaire_8870/py.typed").exists()
+    assert (INTEGRATION_DIR / "py.typed").exists()
 
 
 def test_all_modules_import() -> None:
