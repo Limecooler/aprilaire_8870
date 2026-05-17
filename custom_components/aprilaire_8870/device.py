@@ -536,25 +536,34 @@ class AprilaireDevice:
         _LOGGER.debug("Completed initialization for thermostat %s", self.address)
         return True
 
-    async def _query_with_retries(
+    async def _async_send_with_jitter_retry(
         self,
-        command: str,
+        send_coro_factory,
         *,
         retries: int,
-        timeout: Optional[float] = None,
+        description: str,
     ) -> Optional[str]:
-        """Query the thermostat and retry transient failures with jitter."""
+        """Shared retry-with-jitter loop used by every command path.
+
+        v0.3.0: unified primitive for both ``_query_with_retries`` (extracts
+        value-after-equals) and ``_send_command_with_retry`` (returns raw
+        response line). Callers pass a no-arg factory that returns the
+        underlying coroutine — invoked fresh for each attempt so any
+        per-attempt state (future registration, etc.) is reset cleanly.
+
+        Jitter prevents N devices from synchronizing their retries when
+        the bus is briefly saturated. Returns the first non-None response
+        or None after ``retries+1`` total attempts. Never raises.
+        """
         import random
 
         for attempt in range(retries + 1):
             try:
-                response = await self.protocol.execute_query_command(
-                    self.address, command, timeout=timeout
-                )
+                response = await send_coro_factory()
             except Exception as ex:
                 _LOGGER.debug(
-                    "Exception querying %s on thermostat %s (attempt %d): %s",
-                    command, self.address, attempt + 1, ex,
+                    "Exception during %s on thermostat %s (attempt %d): %s",
+                    description, self.address, attempt + 1, ex,
                 )
                 response = None
 
@@ -562,10 +571,31 @@ class AprilaireDevice:
                 return response
 
             if attempt < retries:
-                # 0.5s base with a small jitter so 11 devices don't synchronize their retries.
+                # 0.5s base + small jitter so devices don't synchronize their retries.
                 await asyncio.sleep(0.5 + random.uniform(0, 0.2))
 
         return None
+
+    async def _query_with_retries(
+        self,
+        command: str,
+        *,
+        retries: int,
+        timeout: Optional[float] = None,
+    ) -> Optional[str]:
+        """Query the thermostat for a value (e.g. TEMP, MODE) with retries.
+
+        ``command`` is the bare command code (no SN prefix, no '?'); the
+        protocol layer formats and extracts the value-after-equals from the
+        response. Returns the extracted value or None.
+        """
+        return await self._async_send_with_jitter_retry(
+            lambda: self.protocol.execute_query_command(
+                self.address, command, timeout=timeout
+            ),
+            retries=retries,
+            description=f"query {command}",
+        )
 
     def _note_optional_failure(self, cmd_name: str) -> None:
         """Track a consecutive failure on an optional command.
@@ -737,96 +767,37 @@ class AprilaireDevice:
             _LOGGER.error("Error updating thermostat %s: %s", self.address, err)
             return False
 
-    def _find_matching_response(self, responses: List[str], command: str) -> Optional[str]:
-        """Find the response that matches the command with improved pattern matching."""
-        if not responses:
-            return None
-            
-        # Extract command parts
-        cmd_parts = command.strip().split(" ")
-        if len(cmd_parts) < 2:
-            return None
-            
-        # Extract device ID from command (e.g., "SN1" -> "1")
-        device_part = cmd_parts[0]  # e.g., "SN1"
-        device_id = None
-        if device_part.startswith("SN"):
-            try:
-                device_id = int(device_part[2:])
-            except ValueError:
-                pass
-                
-        command_part = cmd_parts[1]  # e.g., "ID?"
-        # Strip the trailing ? for query commands
-        command_name = command_part.rstrip("?")
-        
-        # First, look for exact matches
-        for response in responses:
-            # Match the device ID with regex to handle location names
-            import re
-            device_match = re.match(r'^SN(\d+)', response)
-            if device_match and int(device_match.group(1)) == device_id:
-                # Then check if command is in the response
-                if command_name in response:
-                    return response
-                    
-        # If no exact match, return first response for this device
-        for response in responses:
-            device_match = re.match(r'^SN(\d+)', response)
-            if device_match and int(device_match.group(1)) == device_id:
-                return response
-                    
-        return None
-
     async def _send_command_with_retry(
-        self, 
-        command: str, 
-        retries: int = 2, 
+        self,
+        command: str,
+        retries: int = 2,
         timeout: float = 3.0,
-        allow_skip: bool = False
+        allow_skip: bool = False,
     ) -> Optional[str]:
-        """Send command with retry mechanism.
-        
-        Args:
-            command: Command to send
-            retries: Number of retries on failure
-            timeout: Command timeout in seconds
-            allow_skip: Whether to allow skipping this command on persistent failure
-            
-        Returns:
-            Response string or None if command failed
-            
-        Raises:
-            Exception: If command fails and allow_skip is False
+        """Send a fully-formatted command (e.g. ``SN1 TEMP?`` or ``SN1 CR=NORMAL``).
+
+        Returns the raw response line (with SN prefix and any embedded
+        location name) or None if all attempts failed. The ``allow_skip``
+        param is preserved for source compatibility but ALWAYS treated as
+        True now — callers reliably handled None already, and an
+        exception path here just creates noisy tracebacks for an
+        already-handled timeout.
+
+        Wraps _async_send_with_jitter_retry around the connection's
+        async_send_command_with_response, which (since v0.3.0) uses the
+        per-address future registry.
         """
-        for attempt in range(retries + 1):
-            if attempt > 0:
-                _LOGGER.debug("Retry %d for command %s on device %s", attempt, command, self.address)
-                await asyncio.sleep(1.0)  # Longer delay for retries
-                    
-            try:
-                # Use the improved command method from connection if available
-                if hasattr(self.protocol._connection, "async_send_command_with_response"):
-                    response = await self.protocol._connection.async_send_command_with_response(command, timeout)
-                else:
-                    # Fallback to standard method
-                    self.protocol._connection.get_received_messages()  # Clear messages
-                    await self.protocol._connection.async_send_command(command)
-                    await asyncio.sleep(2.0)  # Wait for response
-                    responses = self.protocol._connection.get_received_messages()
-                    response = self._find_matching_response(responses, command)
-                        
-                if response:
-                    return response
-            except Exception as err:
-                _LOGGER.error("Error sending command %s (attempt %d): %s", command, attempt, err)
-                    
-        # If we get here, all attempts failed
-        if allow_skip:
-            _LOGGER.debug("Skipping command %s after %d failed attempts", command, retries + 1)
+        connection = self.protocol._connection
+        if not hasattr(connection, "async_send_command_with_response"):
+            # No connection support — nothing to send. Fail fast.
+            _LOGGER.debug("Connection lacks async_send_command_with_response; %s skipped", command)
             return None
-        else:
-            raise Exception(f"Command {command} failed after {retries + 1} attempts")
+
+        return await self._async_send_with_jitter_retry(
+            lambda: connection.async_send_command_with_response(command, timeout),
+            retries=retries,
+            description=f"send {command}",
+        )
 
     async def async_send_command(self, command: str, value: Any = None) -> Any:
         """Send a command to the thermostat.

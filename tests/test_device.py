@@ -1211,81 +1211,31 @@ async def test_send_command_retry_uses_response_method() -> None:
     assert result == "SN1 TEMP=72F"
 
 
-async def test_send_command_retry_fallback_path() -> None:
+async def test_send_command_retry_returns_none_when_no_connection_support() -> None:
+    """If the connection lacks async_send_command_with_response, fail fast."""
     dev, _, proto = make_device()
-    conn = MagicMock()
-    conn.async_send_command = AsyncMock()
-    conn.get_received_messages = MagicMock(side_effect=[[], ["SN1 TEMP=72F"]])
-    del conn.async_send_command_with_response  # force the fallback branch
+    conn = MagicMock(spec=[])  # no methods at all
     proto._connection = conn
-    with patch("custom_components.aprilaire_8870.device.asyncio.sleep", new=AsyncMock()):
-        result = await dev._send_command_with_retry("SN1 TEMP?")
-    assert result == "SN1 TEMP=72F"
-
-
-async def test_send_command_retry_eventually_fails_allow_skip() -> None:
-    dev, conn, _ = make_device()
-    conn.async_send_command_with_response = AsyncMock(return_value=None)
-    with patch("custom_components.aprilaire_8870.device.asyncio.sleep", new=AsyncMock()):
-        result = await dev._send_command_with_retry("SN1 TEMP?", allow_skip=True)
+    result = await dev._send_command_with_retry("SN1 TEMP?")
     assert result is None
 
 
-async def test_send_command_retry_eventually_fails_raises() -> None:
+async def test_send_command_retry_eventually_fails_returns_none() -> None:
+    """v0.3.0: allow_skip is implicitly always-True; no more raises."""
     dev, conn, _ = make_device()
     conn.async_send_command_with_response = AsyncMock(return_value=None)
     with patch("custom_components.aprilaire_8870.device.asyncio.sleep", new=AsyncMock()):
-        with pytest.raises(Exception):
-            await dev._send_command_with_retry("SN1 TEMP?")
+        # Even without allow_skip, returns None instead of raising.
+        result = await dev._send_command_with_retry("SN1 TEMP?")
+    assert result is None
 
 
-async def test_send_command_retry_exception_in_send() -> None:
+async def test_send_command_retry_exception_in_send_returns_none() -> None:
     dev, conn, _ = make_device()
     conn.async_send_command_with_response = AsyncMock(side_effect=RuntimeError("boom"))
     with patch("custom_components.aprilaire_8870.device.asyncio.sleep", new=AsyncMock()):
         result = await dev._send_command_with_retry("SN1 TEMP?", allow_skip=True)
     assert result is None
-
-
-# ---- _find_matching_response -----------------------------------------------
-
-
-def test_find_matching_response_empty() -> None:
-    dev, _, _ = make_device()
-    assert dev._find_matching_response([], "SN1 TEMP?") is None
-
-
-def test_find_matching_response_short_command() -> None:
-    dev, _, _ = make_device()
-    assert dev._find_matching_response(["x"], "SN1") is None
-
-
-def test_find_matching_response_exact_match() -> None:
-    dev, _, _ = make_device()
-    out = dev._find_matching_response(["SN1 TEMP=72F"], "SN1 TEMP?")
-    assert out == "SN1 TEMP=72F"
-
-
-def test_find_matching_response_partial_device_match() -> None:
-    dev, _, _ = make_device()
-    out = dev._find_matching_response(["SN1 OTHER=X"], "SN1 TEMP?")
-    assert out == "SN1 OTHER=X"
-
-
-def test_find_matching_response_no_device_match() -> None:
-    dev, _, _ = make_device()
-    out = dev._find_matching_response(["SN9 TEMP=72F"], "SN1 TEMP?")
-    assert out is None
-
-
-def test_find_matching_response_device_id_unparsable() -> None:
-    dev, _, _ = make_device()
-    # "SNx" → int("x") raises → device_id stays None → no matches.
-    out = dev._find_matching_response(["SN1 TEMP=72F"], "SNx TEMP?")
-    # Even with device_id=None, the partial loop returns first response that
-    # starts with whatever — but the device_match block needs an int.
-    # In the integer-fallback, regex still pulls SN1, doesn't match None → no result.
-    assert out is None
 
 
 # ---- _enable_cos_with_retry -----------------------------------------------
