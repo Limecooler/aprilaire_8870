@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import voluptuous as vol
 
 from homeassistant import config_entries
@@ -53,6 +54,30 @@ _LOGGER = logging.getLogger(__name__)
 
 class ConnectionException(Exception):
     """Exception for connection issues."""
+
+
+def _parse_location_name(address: int, responses: list[str]) -> str | None:
+    """Extract a location name from response prefixes for a given address.
+
+    Aprilaire thermostats with a location name configured echo it back in the
+    response prefix, e.g. ``SN1Master Bedroom ID=8870`` instead of just
+    ``SN1 ID=8870``. This helper returns the trimmed name if present, or None.
+    """
+    if not responses:
+        return None
+    pattern = re.compile(
+        rf"^SN{address}\s*([A-Za-z0-9 ]*?)\s*[A-Z]{{2,}}="
+    )
+    for line in responses:
+        if not isinstance(line, str):
+            continue
+        match = pattern.match(line)
+        if not match:
+            continue
+        name = match.group(1).strip()
+        if name:
+            return name
+    return None
 
 
 class AprilaireConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
@@ -238,25 +263,34 @@ class AprilaireConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             discovered_thermostats.sort()
             _LOGGER.debug("Discovered thermostats: %s", discovered_thermostats)
             
-            # Get minimal info about first thermostat to confirm it's an Aprilaire 8870
-            # without doing full initialization
-            if discovered_thermostats:
-                model_cmd = f"SN{discovered_thermostats[0]} ID?"
-                _LOGGER.debug("Sending model query: %s", model_cmd)
-                await self.connection.async_send_command(model_cmd)
-                
-                # Wait for response
+            # Probe each thermostat with ID? to (a) confirm 8870 on the first one and
+            # (b) pick up any location name set on the device, so HA's Name & Assign
+            # step shows the user-configured names instead of "Aprilaire 1/2/3...".
+            device_names: dict[str, str] = {}
+            for idx, address in enumerate(discovered_thermostats):
+                id_cmd = f"SN{address} ID?"
+                _LOGGER.debug("Sending ID query: %s", id_cmd)
+                await self.connection.async_send_command(id_cmd)
                 await asyncio.sleep(1)
-                
-                # Get response
-                model_responses = self.connection.get_received_messages()
-                _LOGGER.debug("Model responses received: %s", model_responses)
-                
-                model_response = model_responses[0] if model_responses else ""
-                
-                if not model_response or "8870" not in model_response:
-                    _LOGGER.warning("Not an Aprilaire 8870 model: %s", model_response)
-                    error = "not_aprilaire_8870"
+                id_responses = self.connection.get_received_messages()
+                _LOGGER.debug("ID responses for %s: %s", address, id_responses)
+
+                if idx == 0:
+                    # First device gates the whole flow — must be an 8870.
+                    if not id_responses or not any(
+                        "8870" in r for r in id_responses
+                    ):
+                        _LOGGER.warning(
+                            "Not an Aprilaire 8870 model at address %s: %s",
+                            address,
+                            id_responses,
+                        )
+                        error = "not_aprilaire_8870"
+                        break
+
+                name = _parse_location_name(address, id_responses)
+                if name:
+                    device_names[str(address)] = name
         except Exception as ex:
             _LOGGER.exception("Error during discovery: %s", ex)
             error = "discovery_error"
@@ -275,7 +309,8 @@ class AprilaireConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         
         # Add discovered thermostats to config WITHOUT full initialization
         self.connection_config["discovered_thermostats"] = discovered_thermostats
-        
+        self.connection_config["device_names"] = device_names
+
         # Set default values
         self.connection_config[CONF_SCAN_INTERVAL] = DEFAULT_SCAN_INTERVAL
         self.connection_config[CONF_ENABLE_COS] = True

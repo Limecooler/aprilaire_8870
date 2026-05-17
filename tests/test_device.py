@@ -1145,6 +1145,38 @@ async def test_setup_device_success() -> None:
     assert 2 in mgr.devices
 
 
+def test_device_uses_preset_name_when_provided() -> None:
+    """preset_name from the config-flow probe seeds device.name."""
+    dev = AprilaireDevice(5, MagicMock(), MagicMock(), preset_name="Den")
+    assert dev.name == "Den"
+
+
+def test_device_falls_back_to_address_name_when_no_preset() -> None:
+    dev = AprilaireDevice(5, MagicMock(), MagicMock())
+    assert dev.name == "Aprilaire 5"
+
+
+async def test_manager_threads_preset_name_through_to_device() -> None:
+    """Manager wires device_names dict into AprilaireDevice.preset_name."""
+    mgr = AprilaireDeviceManager(
+        MagicMock(), MagicMock(), device_names={"3": "Living Room"}
+    )
+    with patch.object(AprilaireDevice, "async_initialize", new=AsyncMock(return_value=True)):
+        dev = await mgr.async_setup_device(3)
+    assert dev is not None
+    assert dev.name == "Living Room"
+
+
+async def test_manager_uses_default_name_for_unnamed_address() -> None:
+    mgr = AprilaireDeviceManager(
+        MagicMock(), MagicMock(), device_names={"3": "Living Room"}
+    )
+    with patch.object(AprilaireDevice, "async_initialize", new=AsyncMock(return_value=True)):
+        dev = await mgr.async_setup_device(4)
+    assert dev is not None
+    assert dev.name == "Aprilaire 4"
+
+
 async def test_setup_device_failure() -> None:
     mgr = AprilaireDeviceManager(MagicMock(), MagicMock())
     with patch.object(AprilaireDevice, "async_initialize", new=AsyncMock(return_value=False)):

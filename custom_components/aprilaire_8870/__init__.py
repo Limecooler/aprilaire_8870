@@ -281,8 +281,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             }
             
         _LOGGER.debug("Creating device manager with protocol and coordinator")
-        # Create device manager with protocol and coordinator
-        device_manager = AprilaireDeviceManager(coordinator, protocol)
+        # device_names was populated by the config flow's name-probe (location
+        # name carried in ID? response prefixes). Seeding the manager with it
+        # makes AprilaireDevice.name correct from the first DeviceInfo build,
+        # so HA's Name & Assign step shows the user's configured names.
+        device_names = entry.data.get("device_names", {})
+        device_manager = AprilaireDeviceManager(coordinator, protocol, device_names=device_names)
         
         # Set the device_manager in the coordinator
         coordinator.device_manager = device_manager

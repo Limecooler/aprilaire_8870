@@ -55,22 +55,26 @@ class AprilaireDevice:
     """Representation of an Aprilaire thermostat device."""
 
     def __init__(
-        self, 
-        address: int, 
+        self,
+        address: int,
         coordinator: DataUpdateCoordinator,
-        protocol: AprilaireProtocol
+        protocol: AprilaireProtocol,
+        preset_name: Optional[str] = None,
     ) -> None:
         """Initialize the Aprilaire device.
-        
+
         Args:
             address: The RS-485 network address of the thermostat (1-64)
             coordinator: The data update coordinator
             protocol: The protocol implementation for command execution
+            preset_name: Optional location name discovered during config flow.
+                Used as the initial device name so HA's Name & Assign step
+                shows it before runtime name-discovery refines it.
         """
         self.address = address
         self.coordinator = coordinator
         self.protocol = protocol
-        self.name = f"Aprilaire {address}"
+        self.name = preset_name or f"Aprilaire {address}"
         self.model = "8870"
         self.firmware_version = None
         self.available = False
@@ -1226,16 +1230,26 @@ class AprilaireDevice:
 class AprilaireDeviceManager:
     """Manager for Aprilaire thermostat devices."""
     
-    def __init__(self, coordinator: DataUpdateCoordinator, protocol: AprilaireProtocol) -> None:
+    def __init__(
+        self,
+        coordinator: DataUpdateCoordinator,
+        protocol: AprilaireProtocol,
+        device_names: Optional[Dict[str, str]] = None,
+    ) -> None:
         """Initialize the device manager.
-        
+
         Args:
             coordinator: The data update coordinator
             protocol: The protocol implementation for command execution
+            device_names: Optional mapping of address (as string) to a location
+                name discovered during config flow. Used to pre-populate each
+                device's ``name`` so HA's Name & Assign UI shows the user's
+                names from the start.
         """
         self.coordinator = coordinator
         self.protocol = protocol
         self.devices = {}  # address -> AprilaireDevice
+        self.device_names: Dict[str, str] = dict(device_names or {})
 
     async def async_discover_devices(self, connection) -> List[int]:
         """Discover thermostats on the network.
@@ -1301,8 +1315,11 @@ class AprilaireDeviceManager:
         if address in self.devices:
             return self.devices[address]
             
-        # Create new device
-        device = AprilaireDevice(address, self.coordinator, self.protocol)
+        # Create new device, seeding name from config-flow discovery if present.
+        preset_name = self.device_names.get(str(address))
+        device = AprilaireDevice(
+            address, self.coordinator, self.protocol, preset_name=preset_name
+        )
         
         # Initialize device
         if await device.async_initialize():

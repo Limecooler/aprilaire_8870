@@ -47,15 +47,34 @@ async def test_connection_type_chooses_serial_port(hass) -> None:
     assert next_result["step_id"] == "serial_port"
 
 
-def _patch_discovery(addresses=None, model_response="MODEL 8870"):
-    """Returns a context manager that stubs out network IO during discovery."""
+def _patch_discovery(
+    addresses=None,
+    model_response="MODEL 8870",
+    names=None,
+):
+    """Returns a context manager that stubs out network IO during discovery.
+
+    `names` is an optional {address: name} dict — when set, each per-address
+    ID? response includes the name in the SN<addr> prefix so the config flow's
+    name probe picks it up. Addresses not in the dict get a plain response.
+    """
     addresses = addresses if addresses is not None else [1, 2]
-    received_seq = [
-        # Discovery responses: lines starting "SN<digits>"
+    names = names or {}
+
+    # The flow reads once for the SN? broadcast, then once per address for ID?.
+    received_seq: list[list[str]] = [
+        # SN? broadcast responses
         [f"SN{a}" for a in addresses],
-        # Model response
-        [model_response] if model_response else [],
     ]
+    for addr in addresses:
+        name = names.get(addr, "")
+        prefix = f"SN{addr}{name} " if name else f"SN{addr} "
+        # ID? response includes the model if model_response is set; otherwise
+        # an empty list simulates no reply.
+        if model_response:
+            received_seq.append([f"{prefix}ID={model_response}"])
+        else:
+            received_seq.append([])
 
     async def stub_connect(self):
         self._state = "connected"
@@ -119,6 +138,40 @@ async def test_serial_server_success(hass) -> None:
     assert result["type"] == data_entry_flow.FlowResultType.CREATE_ENTRY
     assert result["title"] == "Aprilaire Thermostat (2 devices)"
     assert result["data"]["discovered_thermostats"] == [1, 2]
+    # No names configured on the thermostats — device_names is an empty dict.
+    assert result["data"]["device_names"] == {}
+
+
+async def test_serial_server_picks_up_device_names(hass) -> None:
+    """Thermostats with a location name return it in the response prefix."""
+    patches = _patch_discovery(
+        addresses=[1, 2, 3],
+        names={1: "Master Bedroom", 3: "Living Room"},
+    )
+    for p in patches:
+        p.start()
+    try:
+        result = await _start_serial_server_flow(hass)
+    finally:
+        for p in patches:
+            p.stop()
+    assert result["type"] == data_entry_flow.FlowResultType.CREATE_ENTRY
+    # Only addresses with names appear; unnamed ones stay numbered.
+    assert result["data"]["device_names"] == {
+        "1": "Master Bedroom",
+        "3": "Living Room",
+    }
+
+
+def test_parse_location_name_extracts_name() -> None:
+    assert cf._parse_location_name(1, ["SN1Master Bedroom ID=8870"]) == "Master Bedroom"
+    assert cf._parse_location_name(2, ["SN2 ID=8870"]) is None
+    assert cf._parse_location_name(7, ["SN7Kitchen TEMP=72.5"]) == "Kitchen"
+    # Wrong address — no match.
+    assert cf._parse_location_name(99, ["SN1Master Bedroom ID=8870"]) is None
+    # Empty input.
+    assert cf._parse_location_name(1, []) is None
+    assert cf._parse_location_name(1, [None]) is None  # type: ignore[list-item]
 
 
 async def test_serial_server_connect_fails(hass) -> None:
