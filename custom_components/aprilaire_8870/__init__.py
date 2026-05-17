@@ -95,12 +95,11 @@ async def async_initialize_devices_background(
             except Exception as pre_init_ex:
                 _LOGGER.exception("Error pre-initializing data for device %s: %s", address, pre_init_ex)
     
-        # Setup devices with proper spacing between initializations
+        # Setup devices. Bus serialization happens inside the connection
+        # layer; the per-device async_initialize already paces between its
+        # own queries, so the outer loop doesn't need extra sleeps.
         for address in discovered_addresses:
             try:
-                # Add delay between device initializations to prevent overwhelming the network
-                await asyncio.sleep(1.0)
-                
                 _LOGGER.debug("Initializing thermostat %s in background", address)
                 device = await device_manager.async_setup_device(address)
                 if device:
@@ -263,14 +262,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         
         _LOGGER.debug("Successfully connected to Aprilaire network")
         
-        # Start reading from the connection
+        # Start reading from the connection. async_start_reading hands the
+        # read task off to the event loop and returns immediately; no need
+        # to sleep before checking liveness.
         _LOGGER.debug("Starting read loop from connection")
         await connection.async_start_reading()
-        
-        # Add delay after starting read loop
-        await asyncio.sleep(1.0)
 
-        # Verify connection is still active after starting read loop
         if not connection.is_connected():
             _LOGGER.error("Connection lost after starting read loop")
             raise ConfigEntryNotReady("Connection lost after starting read loop")

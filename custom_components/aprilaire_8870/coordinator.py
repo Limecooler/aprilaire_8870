@@ -107,8 +107,6 @@ class AprilaireDataUpdateCoordinator(DataUpdateCoordinator):
         self._last_cos_verification = None
         self._cos_verified = False
         self._connection_state = False
-        self._cos_message_queue = asyncio.Queue()
-        self._cos_processor_task = None
         self._store = Store(hass, STORAGE_VERSION, STORAGE_KEY)
         self._cached_state = None
         self._state_loaded = False
@@ -191,49 +189,12 @@ class AprilaireDataUpdateCoordinator(DataUpdateCoordinator):
         except Exception as ex:
             _LOGGER.error("Error saving state: %s", ex)
 
-    async def async_setup(self) -> None:
-        """Set up the coordinator."""
-        # Register connection state listener
-        self.connection.register_connection_callback(self._connection_state_changed)
-        
-        # Start COS message processor
-        self._cos_processor_task = asyncio.create_task(self._process_cos_messages())
-        
-        # Set up COS message listener
-        self.connection.register_message_callback(self._handle_cos_message)
-    
     @callback
     def _handle_connection_state_change(self, config, state: str) -> None:
         """Handle connection state changes from dispatcher."""
         _LOGGER.debug("Received connection state change from dispatcher: %s", state)
         is_connected = (state == "connected")
         self._connection_state_changed(is_connected)
-
-    async def _process_cos_messages(self) -> None:
-        """Process COS messages from the queue."""
-        try:
-            while True:
-                message = await self._cos_message_queue.get()
-                try:
-                    await self._process_cos_message(message)
-                except Exception as ex:  # pylint: disable=broad-except
-                    _LOGGER.error("Error processing COS message: %s - %s", message, ex)
-                finally:
-                    self._cos_message_queue.task_done()
-        except asyncio.CancelledError:
-            _LOGGER.debug("COS message processor task cancelled")
-            raise
-        except Exception as ex:  # pylint: disable=broad-except
-            _LOGGER.error("COS message processor task failed: %s", ex)
-
-    @callback
-    def _handle_cos_message(self, message: str) -> None:
-        """Handle a COS message from the connection."""
-        if not self._cos_enabled:
-            return
-            
-        # Queue the message for processing
-        self._cos_message_queue.put_nowait(message)
 
     @callback
     def _connection_state_changed(self, connected: bool) -> None:
@@ -296,75 +257,6 @@ class AprilaireDataUpdateCoordinator(DataUpdateCoordinator):
                     device._state[key] = value
                     
         _LOGGER.debug("Applied stored state to device %s", device_id)
-
-    async def _process_cos_message(self, message: str) -> None:
-        """Process a COS message and update device state."""
-        _LOGGER.debug("Processing COS message: %s", message)
-        
-        # Basic format check
-        if not message.startswith("SN"):
-            _LOGGER.warning("Invalid COS message format: %s", message)
-            return
-            
-        try:
-            # Extract device address and command
-            parts = message.split()
-            if len(parts) < 2:
-                _LOGGER.warning("Invalid COS message format: %s", message)
-                return
-                
-            # Parse the address - format is SN<address>
-            device_id = parts[0][2:]
-            
-            # Parse the command and value
-            command_parts = parts[1].split("=")
-            if len(command_parts) != 2:
-                _LOGGER.warning("Invalid COS command format: %s", message)
-                return
-                
-            command = command_parts[0]
-            value = command_parts[1]
-            
-            # Ensure data dictionaries are initialized
-            if self._device_data is None:
-                self._device_data = {}
-            if self.data is None:
-                self.data = {}
-                
-            # Update device data
-            if device_id in self._device_data:
-                device = None
-                if self.devices is not None:
-                    device = self.devices.get(int(device_id))
-                    
-                if device:
-                    # Use the device's method to process the COS message
-                    device.process_cos_message(command, value)
-                    self._device_data[device_id]["available"] = True
-                    
-                    # Also update main data structure
-                    if device_id not in self.data:
-                        self.data[device_id] = {}
-                    self.data[device_id]["available"] = True
-                    
-                    # Remove the "from_cache" flag if present
-                    if "from_cache" in self._device_data[device_id]:
-                        del self._device_data[device_id]["from_cache"]
-                    if device_id in self.data and "from_cache" in self.data[device_id]:
-                        del self.data[device_id]["from_cache"]
-                    
-                    # Schedule a state save
-                    self.hass.async_create_task(self._async_save_state())
-                    
-                    # Notify listeners
-                    self.async_update_listeners()
-                else:
-                    _LOGGER.warning("Device object not found for ID: %s", device_id)
-            else:
-                _LOGGER.warning("Received COS message for unknown device: %s", device_id)
-                
-        except Exception as ex:  # pylint: disable=broad-except
-            _LOGGER.error("Error parsing COS message: %s - %s", message, ex)
 
     async def async_verify_cos_functionality(self) -> bool:
         """Verify COS functionality per-device.
@@ -665,11 +557,3 @@ class AprilaireDataUpdateCoordinator(DataUpdateCoordinator):
             
         # Save final state
         await self._async_save_state()
-        
-        # Cancel the COS processor task
-        if self._cos_processor_task is not None:
-            self._cos_processor_task.cancel()
-            try:
-                await self._cos_processor_task
-            except asyncio.CancelledError:
-                pass

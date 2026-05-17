@@ -137,19 +137,6 @@ async def test_save_state_skips_empty_devices(hass) -> None:
 # ---- async_setup -----------------------------------------------------------
 
 
-async def test_async_setup_starts_cos_processor(hass) -> None:
-    coord = make_coord(hass)
-    await coord.async_setup()
-    try:
-        assert coord._cos_processor_task is not None
-    finally:
-        coord._cos_processor_task.cancel()
-        try:
-            await coord._cos_processor_task
-        except asyncio.CancelledError:
-            pass
-
-
 # ---- connection state callbacks -------------------------------------------
 
 
@@ -187,89 +174,6 @@ def test_handle_connection_state_change_from_dispatcher(hass) -> None:
     coord = make_coord(hass)
     coord._connection_state = False
     coord._handle_connection_state_change({}, "connected")
-
-
-# ---- _handle_cos_message / _process_cos_messages ---------------------------
-
-
-def test_handle_cos_message_when_disabled(hass) -> None:
-    coord = make_coord(hass)
-    coord._cos_enabled = False
-    coord._handle_cos_message("SN1 TEMP=72F")
-    assert coord._cos_message_queue.empty()
-
-
-def test_handle_cos_message_queues(hass) -> None:
-    coord = make_coord(hass)
-    coord._cos_enabled = True
-    coord._handle_cos_message("SN1 TEMP=72F")
-    assert coord._cos_message_queue.qsize() == 1
-
-
-async def test_process_cos_messages_loop_handles_message(hass) -> None:
-    coord = make_coord(hass)
-    coord._process_cos_message = AsyncMock()
-    coord._cos_message_queue.put_nowait("SN1 TEMP=72F")
-    task = asyncio.create_task(coord._process_cos_messages())
-    await asyncio.sleep(0.01)
-    coord._process_cos_message.assert_called_with("SN1 TEMP=72F")
-    task.cancel()
-    try:
-        await task
-    except asyncio.CancelledError:
-        pass
-
-
-async def test_process_cos_messages_exception(hass) -> None:
-    coord = make_coord(hass)
-    coord._process_cos_message = AsyncMock(side_effect=RuntimeError("boom"))
-    coord._cos_message_queue.put_nowait("X")
-    task = asyncio.create_task(coord._process_cos_messages())
-    await asyncio.sleep(0.01)
-    task.cancel()
-    try:
-        await task
-    except asyncio.CancelledError:
-        pass
-
-
-# ---- _process_cos_message --------------------------------------------------
-
-
-async def test_process_cos_message_bad_prefix(hass) -> None:
-    coord = make_coord(hass)
-    await coord._process_cos_message("garbage")
-
-
-async def test_process_cos_message_too_short(hass) -> None:
-    coord = make_coord(hass)
-    await coord._process_cos_message("SN1")
-
-
-async def test_process_cos_message_bad_command_format(hass) -> None:
-    coord = make_coord(hass)
-    await coord._process_cos_message("SN1 NOEQUALS")
-
-
-async def test_process_cos_message_dispatches_to_device(hass) -> None:
-    dev = make_dev(1)
-    dev.process_cos_message = MagicMock(return_value=True)
-    coord = make_coord(hass, devices={1: dev})
-    coord._device_data["1"] = {}
-    await coord._process_cos_message("SN1 TEMP=72F")
-    dev.process_cos_message.assert_called_with("TEMP", "72F")
-
-
-async def test_process_cos_message_unknown_device(hass) -> None:
-    coord = make_coord(hass)
-    coord._device_data = {}  # device "1" not in there
-    await coord._process_cos_message("SN1 TEMP=72F")
-
-
-async def test_process_cos_message_outer_exception(hass) -> None:
-    coord = make_coord(hass)
-    with patch.object(coord, "_device_data", new=MagicMock(side_effect=RuntimeError())):
-        await coord._process_cos_message("SN1 TEMP=72F")
 
 
 # ---- async_verify_cos_functionality ---------------------------------------
@@ -561,19 +465,12 @@ async def test_set_fan_mode_unknown(hass) -> None:
 # ---- async_shutdown --------------------------------------------------------
 
 
-async def test_shutdown_full(hass) -> None:
+async def test_shutdown_runs_cleanly(hass) -> None:
     coord = make_coord(hass)
     coord._store = MagicMock()
     coord._store.async_save = AsyncMock()
-    await coord.async_setup()
-    await coord.async_shutdown()
-    assert coord._cos_processor_task.cancelled() or coord._cos_processor_task.done()
-
-
-async def test_shutdown_no_setup(hass) -> None:
-    coord = make_coord(hass)
-    coord._store = MagicMock()
-    coord._store.async_save = AsyncMock()
+    # No setup/teardown of background tasks anymore — shutdown should
+    # just unsubscribe from dispatchers and persist state.
     await coord.async_shutdown()
 
 
@@ -595,40 +492,6 @@ async def test_apply_state_to_device(hass) -> None:
     assert "from_cache" not in dev._state
 
 
-async def test_process_cos_message_initializes_data(hass) -> None:
-    """Cover the `_device_data is None / self.data is None` init branches."""
-    dev = make_dev(1)
-    dev.process_cos_message = MagicMock(return_value=True)
-    coord = make_coord(hass, devices={1: dev})
-    coord._device_data = None
-    coord.data = None
-    # device "1" is gone from _device_data after the reset, so the message
-    # routes through "unknown device" path which is fine for coverage.
-    await coord._process_cos_message("SN1 TEMP=72F")
-
-
-async def test_process_cos_message_creates_main_data_entry(hass) -> None:
-    """Hit the `if device_id not in self.data: self.data[device_id] = {}` branch."""
-    dev = make_dev(1)
-    dev.process_cos_message = MagicMock(return_value=True)
-    coord = make_coord(hass, devices={1: dev})
-    coord._device_data = {"1": {}}
-    coord.data = {}  # device_id "1" missing
-    await coord._process_cos_message("SN1 TEMP=72F")
-    assert "1" in coord.data
-
-
-async def test_process_cos_message_strips_from_cache(hass) -> None:
-    dev = make_dev(1)
-    dev.process_cos_message = MagicMock(return_value=True)
-    coord = make_coord(hass, devices={1: dev})
-    coord._device_data = {"1": {"from_cache": True}}
-    coord.data = {"1": {"from_cache": True}}
-    await coord._process_cos_message("SN1 TEMP=72F")
-    assert "from_cache" not in coord._device_data["1"]
-    assert "from_cache" not in coord.data["1"]
-
-
 async def test_update_data_strips_from_cache(hass) -> None:
     dev = make_dev(1)
     coord = make_coord(hass, devices={1: dev})
@@ -643,13 +506,6 @@ async def test_update_data_strips_from_cache(hass) -> None:
     assert "from_cache" not in coord.data["1"]
 
 
-async def test_process_cos_message_device_object_missing(hass) -> None:
-    coord = make_coord(hass)
-    coord._device_data = {"1": {}}  # data slot exists
-    coord.devices = {}  # but device object doesn't
-    await coord._process_cos_message("SN1 TEMP=72F")
-
-
 async def test_update_data_save_state_outer_exception(hass) -> None:
     """Force the save_state try/except in _async_update_data."""
     dev = make_dev(1)
@@ -660,16 +516,6 @@ async def test_update_data_save_state_outer_exception(hass) -> None:
     with patch("custom_components.aprilaire_8870.coordinator.asyncio.sleep", new=AsyncMock()):
         # Should NOT raise — save error is logged and swallowed.
         await coord._async_update_data()
-
-
-async def test_process_cos_messages_outer_exception() -> None:
-    """Cover the outer Exception handler in _process_cos_messages."""
-    coord_obj = MagicMock()
-    coord_obj._cos_message_queue = MagicMock()
-    coord_obj._cos_message_queue.get = AsyncMock(side_effect=RuntimeError("outer"))
-    # Call the unbound coroutine.
-    from custom_components.aprilaire_8870.coordinator import AprilaireDataUpdateCoordinator
-    await AprilaireDataUpdateCoordinator._process_cos_messages(coord_obj)
 
 
 # ---- unsolicited-message listener (v0.2.7) --------------------------------
