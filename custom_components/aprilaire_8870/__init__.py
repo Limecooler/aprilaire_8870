@@ -95,46 +95,53 @@ async def async_initialize_devices_background(
             except Exception as pre_init_ex:
                 _LOGGER.exception("Error pre-initializing data for device %s: %s", address, pre_init_ex)
     
-        # Setup devices. Bus serialization happens inside the connection
-        # layer; the per-device async_initialize already paces between its
-        # own queries, so the outer loop doesn't need extra sleeps.
-        for address in discovered_addresses:
+        # Parallel per-device init. The bus is naturally serialized inside
+        # the connection layer (write side gated by _send_lock; one in-flight
+        # request per address gated by the future registry). Per-device
+        # async_initialize has internal asyncio.sleep padding that overlaps
+        # cleanly across devices, dropping cold-start time from N×~2s to
+        # roughly the longest single device's init.
+        async def _init_one(address):
             try:
                 _LOGGER.debug("Initializing thermostat %s in background", address)
-                device = await device_manager.async_setup_device(address)
-                if device:
-                    initialized_devices[address] = device
-                    # Update the data store as each device is initialized
-                    hass.data[DOMAIN][entry.entry_id]["devices"][address] = device
-                    
-                    # Update coordinator data structure with device state
-                    try:
-                        if hasattr(device, "get_state"):
-                            device_state = device.get_state()
-                            device_id = str(address)
-                            
-                            # Ensure coordinator data is initialized
-                            if coordinator.data is None:
-                                coordinator.data = {}
-                            
-                            # Make sure the device_id exists in coordinator.data with a dictionary
-                            if device_id not in coordinator.data:
-                                coordinator.data[device_id] = {}
-                            
-                            # Now it's safe to update
-                            if device_state:  # Also check if device_state is not None
-                                coordinator.data[device_id].update(device_state)
-                            
-                            # Ensure device availability is set
-                            coordinator.data[device_id]["available"] = device.available
-                            
-                            # Immediately trigger a coordinator update for this device
-                            coordinator.async_update_listeners()
-                    except Exception as state_ex:
-                        _LOGGER.exception("Error updating coordinator data for device %s: %s", address, state_ex)
+                return address, await device_manager.async_setup_device(address)
             except Exception as dev_ex:
-                _LOGGER.exception("Error initializing device %s in background: %s", address, dev_ex)
-                # Continue with other devices even if one fails
+                _LOGGER.exception(
+                    "Error initializing device %s in background: %s", address, dev_ex
+                )
+                return address, None
+
+        init_results = await asyncio.gather(
+            *(_init_one(address) for address in discovered_addresses),
+            return_exceptions=False,
+        )
+        for address, device in init_results:
+            if device is None:
+                continue
+            initialized_devices[address] = device
+            hass.data[DOMAIN][entry.entry_id]["devices"][address] = device
+
+            # Propagate freshly-fetched state into the coordinator so
+            # entity listeners see it on the next refresh.
+            try:
+                if hasattr(device, "get_state"):
+                    device_state = device.get_state()
+                    device_id = str(address)
+                    if coordinator.data is None:
+                        coordinator.data = {}
+                    if device_id not in coordinator.data:
+                        coordinator.data[device_id] = {}
+                    if device_state:
+                        coordinator.data[device_id].update(device_state)
+                    coordinator.data[device_id]["available"] = device.available
+            except Exception as state_ex:
+                _LOGGER.exception(
+                    "Error updating coordinator data for device %s: %s",
+                    address, state_ex,
+                )
+        # Single listener notify after the whole batch — avoids 11 separate
+        # refreshes for a single startup pass.
+        coordinator.async_update_listeners()
     
         # Update the coordinator with all discovered devices
         _LOGGER.debug("Background initialization completed for %d of %d thermostats",

@@ -79,6 +79,41 @@ async def test_initialize_devices_background_happy(hass) -> None:
     coord.async_refresh.assert_called()
 
 
+async def test_initialize_devices_runs_in_parallel(hass) -> None:
+    """v0.3.0: per-device init fans out via asyncio.gather, not serial."""
+    coord = MagicMock()
+    coord.data = None
+    coord.async_refresh = AsyncMock()
+    coord.async_update_listeners = MagicMock()
+    coord.connection = MagicMock()
+    coord.connection.is_connected = MagicMock(return_value=True)
+
+    in_flight = 0
+    max_in_flight = 0
+
+    async def slow_setup(address):
+        nonlocal in_flight, max_in_flight
+        in_flight += 1
+        max_in_flight = max(max_in_flight, in_flight)
+        await asyncio.sleep(0.01)
+        in_flight -= 1
+        d = MagicMock()
+        d.get_state = MagicMock(return_value={})
+        d.available = True
+        return d
+
+    dm = MagicMock()
+    dm.async_setup_device = AsyncMock(side_effect=slow_setup)
+
+    entry = MockConfigEntry(domain=DOMAIN, data={})
+    entry.add_to_hass(hass)
+    hass.data.setdefault(DOMAIN, {})[entry.entry_id] = {"devices": {}}
+
+    await async_initialize_devices_background(hass, entry, coord, dm, [1, 2, 3, 4, 5])
+    # All five should have overlapped — serial would max out at 1.
+    assert max_in_flight >= 3
+
+
 async def test_initialize_devices_handles_disconnected(hass) -> None:
     coord = MagicMock()
     coord.data = {}

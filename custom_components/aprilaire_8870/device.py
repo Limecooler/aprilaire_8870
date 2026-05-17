@@ -352,21 +352,22 @@ class AprilaireDevice:
         """Initialize the device with improved error handling and minimal required commands."""
         _LOGGER.debug("Beginning initialization for thermostat %s", self.address)
         try:
-            # Query basic device information - this is essential
-            await asyncio.sleep(0.5)  # Add delay before first command
+            # Query basic device information - this is essential.
+            # v0.3.0: dropped the inter-command 0.5s sleep padding that used
+            # to live here. Bus serialization happens inside the connection
+            # layer (_send_lock + per-address future registry), so per-device
+            # init can run in parallel across devices and the only required
+            # pacing is the bus's own response time.
             _LOGGER.debug("Querying device information for thermostat %s", self.address)
             model_info = await self._send_command_with_retry(f"SN{self.address} ID?", retries=3)
-            
+
             if not model_info:
                 _LOGGER.error("Failed to query device information for thermostat %s", self.address)
                 return False
-                
+
             # Parse model info
             _LOGGER.debug("Parsing model info: %s", model_info)
             self._parse_model_info(model_info)
-            
-            # Add delay between commands
-            await asyncio.sleep(0.5)
             
             # Query essential device capabilities
             # These queries are important but we continue even if they fail
@@ -384,9 +385,6 @@ class AprilaireDevice:
                 else:
                     _LOGGER.warning("No equipment configuration received for thermostat %s", self.address)
                     
-                # Add delay between commands
-                await asyncio.sleep(0.5)
-                
                 # Controller type
                 _LOGGER.debug("Querying controller type for thermostat %s", self.address)
                 controller_type = await self._send_command_with_retry(
@@ -403,9 +401,6 @@ class AprilaireDevice:
                 _LOGGER.error("Error querying capabilities for thermostat %s: %s", self.address, cap_ex)
                 _LOGGER.error("Traceback: %s", traceback.format_exc())
                 # Continue with default capabilities
-                
-            # Add delay between commands
-            await asyncio.sleep(0.5)
                 
             # Get minimal essential state - just enough to prove device works
             try:
