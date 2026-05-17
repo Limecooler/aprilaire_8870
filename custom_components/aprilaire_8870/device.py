@@ -48,11 +48,13 @@ from .const import (
 )
 from .protocol import AprilaireProtocol
 
-# After this many consecutive timeouts on the same optional command we mark
-# it as unsupported for that device and stop polling it until the next
-# connection. Three gives the bus a couple of chances to recover from
-# transient glitches before we give up.
-_UNSUPPORTED_THRESHOLD = 3
+# After this many consecutive failed POLL CYCLES on the same optional
+# command we mark it as unsupported for that device and stop polling it
+# until the next connection. Each poll cycle attempts the command up to
+# (1 + retries) times — with the optional path's retries=1 that's 2
+# tries per cycle. Threshold of 2 means we give up after 2 cycles where
+# both tries failed (4 total attempts, ~4 wasted seconds per cycle).
+_UNSUPPORTED_THRESHOLD = 2
 
 _LOGGER = logging.getLogger(__name__)
 

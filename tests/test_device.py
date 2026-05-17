@@ -53,8 +53,9 @@ def test_get_state_returns_copy() -> None:
 
 def test_note_optional_failure_marks_unsupported_after_threshold() -> None:
     dev, _, _ = make_device()
-    for _ in range(3):
-        dev._note_optional_failure("FLTALM")
+    # Threshold is 2 cycles — two consecutive failures trip the skip.
+    dev._note_optional_failure("FLTALM")
+    dev._note_optional_failure("FLTALM")
     assert "FLTALM" in dev._unsupported_commands
     # Counter cleared once the command is marked unsupported.
     assert "FLTALM" not in dev._optional_failure_counts
@@ -63,9 +64,8 @@ def test_note_optional_failure_marks_unsupported_after_threshold() -> None:
 def test_note_optional_failure_below_threshold_doesnt_mark() -> None:
     dev, _, _ = make_device()
     dev._note_optional_failure("FLTALM")
-    dev._note_optional_failure("FLTALM")
     assert "FLTALM" not in dev._unsupported_commands
-    assert dev._optional_failure_counts["FLTALM"] == 2
+    assert dev._optional_failure_counts["FLTALM"] == 1
 
 
 def test_note_optional_failure_no_op_once_unsupported() -> None:
@@ -83,6 +83,50 @@ def test_reset_unsupported_commands_clears_state() -> None:
     dev.reset_unsupported_commands()
     assert dev._unsupported_commands == set()
     assert dev._optional_failure_counts == {}
+
+
+async def test_async_update_skips_unsupported_after_two_cycles() -> None:
+    """Two consecutive poll cycles where HUM times out → HUM stops being queried."""
+    from custom_components.aprilaire_8870.device import AprilaireDevice
+    from custom_components.aprilaire_8870.protocol import AprilaireProtocol
+    from tests.conftest import StubConnection
+    conn = StubConnection({})
+    proto = AprilaireProtocol(connection=conn)
+    # monitor_humidity=True so HUM is in the optional list; OT off so we
+    # have exactly one optional command to track.
+    dev = AprilaireDevice(
+        1, MagicMock(), proto,
+        monitor_humidity=True, monitor_outdoor_temp=False,
+    )
+    dev.available = True
+    # Essential commands all succeed; HUM never responds.
+    conn.responses["SN1 TEMP?"] = "SN1 TEMP=72F"
+    conn.responses["SN1 MODE?"] = "SN1 MODE=COOL"
+    conn.responses["SN1 FAN?"] = "SN1 FAN=AUTO"
+    conn.responses["SN1 HVAC?"] = "SN1 HVAC=G-Y1-W1-Y2-W2-B-O-"
+    conn.responses["SN1 HOLD?"] = "SN1 HOLD=OFF"
+    conn.responses["SN1 SC?"] = "SN1 SC=75F"
+    # No "SN1 HUM?" response → query times out.
+    dev._state["mode"] = "COOL"
+
+    with patch("custom_components.aprilaire_8870.device.asyncio.sleep", new=AsyncMock()):
+        await dev.async_update()
+    # First cycle: HUM tried, failed, counter at 1.
+    assert dev._optional_failure_counts.get("HUM") == 1
+    assert "HUM" not in dev._unsupported_commands
+    hum_calls_after_cycle_1 = sum(1 for c in conn.sent if "HUM" in c)
+
+    conn.sent.clear()
+    with patch("custom_components.aprilaire_8870.device.asyncio.sleep", new=AsyncMock()):
+        await dev.async_update()
+    # Second cycle: counter reached threshold (2), HUM marked unsupported.
+    assert "HUM" in dev._unsupported_commands
+
+    conn.sent.clear()
+    with patch("custom_components.aprilaire_8870.device.asyncio.sleep", new=AsyncMock()):
+        await dev.async_update()
+    # Third cycle: HUM is unsupported, no longer queried.
+    assert not any("HUM" in c for c in conn.sent)
 
 
 def test_get_state_handles_missing_state() -> None:
