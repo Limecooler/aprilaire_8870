@@ -1,1 +1,18 @@
-../../manifest.json
+{
+  "domain": "aprilaire_8870",
+  "name": "Aprilaire 8870 Thermostat",
+  "codeowners": ["@Limecooler"],
+  "config_flow": true,
+  "dependencies": [],
+  "documentation": "https://github.com/Limecooler/aprilaire_8870",
+  "integration_type": "hub",
+  "iot_class": "local_push",
+  "issue_tracker": "https://github.com/Limecooler/aprilaire_8870/issues",
+  "loggers": ["custom_components.aprilaire_8870"],
+  "quality_scale": "gold",
+  "requirements": [
+    "pyserial-asyncio-fast>=0.11",
+    "telnetlib3>=1.0.4"
+  ],
+  "version": "0.2.0"
+}

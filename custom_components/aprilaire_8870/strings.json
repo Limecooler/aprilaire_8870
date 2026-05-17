@@ -1,1 +1,218 @@
-../../strings.json
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Select Connection Type",
+        "description": "Choose how to connect to your Aprilaire 8870 thermostats."
+      },
+      "connection_type": {
+        "title": "Connection Method",
+        "description": "Select how your RS-485 thermostat network is connected to Home Assistant.",
+        "data": {
+          "type": "Connection Type"
+        }
+      },
+      "serial_server": {
+        "title": "Serial Server Configuration",
+        "description": "Enter the details for your network-connected serial server.",
+        "data": {
+          "host": "IP Address or Hostname",
+          "port": "Port"
+        }
+      },
+      "serial_port": {
+        "title": "Serial Port Configuration",
+        "description": "Enter the details for your direct serial connection.",
+        "data": {
+          "device": "Serial Port Name",
+          "baud_rate": "Baud Rate"
+        }
+      },
+      "discovery": {
+        "title": "Discovering Thermostats",
+        "description": "Searching for Aprilaire 8870 thermostats on the network..."
+      }
+    },
+    "progress": {
+      "discovering": "Searching for thermostats..."
+    },
+    "abort": {
+      "already_configured": "This connection is already configured",
+      "no_devices_found": "No thermostats found on the network",
+      "not_aprilaire_8870": "The device found is not an Aprilaire 8870 thermostat"
+    },
+    "error": {
+      "cannot_connect": "Failed to connect, please verify your connection details",
+      "invalid_host": "Invalid IP address or hostname",
+      "invalid_port": "Port number must be between 1 and 65535",
+      "invalid_serial_port": "Serial port not found or inaccessible",
+      "unknown": "Unexpected error occurred"
+    },
+    "create_entry": {
+      "default": "Successfully connected to {thermostats_count} Aprilaire thermostats"
+    }
+  },
+  "selector": {
+    "connection_type": {
+      "options": {
+        "serial_server": "Network Serial Server (IP address)",
+        "serial_port": "Direct Serial Connection (USB/COM port)"
+      }
+    },
+    "baud_rate": {
+      "options": {
+        "9600": "9600 bps",
+        "19200": "19200 bps"
+      }
+    }
+  },
+  "entity": {
+    "climate": {
+      "aprilaire_climate": {
+        "state_attributes": {
+          "fan_mode": {
+            "state": {
+              "auto": "Auto",
+              "on": "On",
+              "circ": "Circulate"
+            }
+          },
+          "hvac_mode": {
+            "state": {
+              "off": "Off",
+              "heat": "Heat",
+              "cool": "Cool",
+              "auto": "Auto",
+              "heat_cool": "Heat/Cool",
+              "emht": "Emergency Heat"
+            }
+          },
+          "preset_mode": {
+            "state": {
+              "none": "None",
+              "temp": "Temporary",
+              "perm": "Permanent",
+              "vac": "Vacation"
+            }
+          }
+        }
+      }
+    },
+    "binary_sensor": {
+      "aprilaire_hvac_status": {
+        "name": "HVAC Status"
+      },
+      "aprilaire_fan_status": {
+        "name": "Fan Status"
+      },
+      "aprilaire_filter_status": {
+        "name": "Filter Status"
+      },
+      "aprilaire_error_status": {
+        "name": "Error Status"
+      },
+      "aprilaire_network_override": {
+        "name": "Network Override"
+      }
+    },
+    "sensor": {
+      "aprilaire_temperature": {
+        "name": "Temperature"
+      },
+      "aprilaire_humidity": {
+        "name": "Humidity"
+      },
+      "aprilaire_outdoor_temperature": {
+        "name": "Outdoor Temperature"
+      },
+      "aprilaire_outdoor_humidity": {
+        "name": "Outdoor Humidity"
+      }
+    },
+    "switch": {
+      "aprilaire_fan_override": {
+        "name": "Fan Override"
+      },
+      "aprilaire_network_override": {
+        "name": "Network Override"
+      },
+      "aprilaire_backlight": {
+        "name": "Backlight"
+      }
+    }
+  },
+  "services": {
+    "set_text_message": {
+      "name": "Set Text Message",
+      "description": "Display a message on the thermostat's screen.",
+      "fields": {
+        "message": {
+          "name": "Message",
+          "description": "Text message to display (max 31 characters)."
+        },
+        "message_type": {
+          "name": "Message Type",
+          "description": "Type of message to set (permanent or temporary)."
+        }
+      }
+    },
+    "set_backlight": {
+      "name": "Set Backlight",
+      "description": "Control the thermostat's backlight.",
+      "fields": {
+        "state": {
+          "name": "State",
+          "description": "Turn the backlight on or off."
+        },
+        "duration": {
+          "name": "Duration",
+          "description": "How long the backlight stays in this state, in seconds (0-255)."
+        }
+      }
+    },
+    "reset_filter": {
+      "name": "Reset Filter",
+      "description": "Reset the thermostat filter timer."
+    },
+    "set_lockout": {
+      "name": "Set Lockout",
+      "description": "Configure thermostat lockout settings (omit any field to leave it unchanged).",
+      "fields": {
+        "fan_lockout": {
+          "name": "Fan Lockout",
+          "description": "Lock the fan setting (0 = unlocked, 1 = partial, 2 = full)."
+        },
+        "mode_lockout": {
+          "name": "Mode Lockout",
+          "description": "Lock the HVAC mode setting (0 = unlocked, 1 = partial, 2 = full)."
+        },
+        "setpoint_lockout": {
+          "name": "Setpoint Lockout",
+          "description": "Lock the setpoint adjustment (0-4)."
+        },
+        "network_lockout": {
+          "name": "Network Lockout",
+          "description": "Lock network override (0 = unlocked, 1 = locked)."
+        },
+        "lockout_time": {
+          "name": "Lockout Time",
+          "description": "Lockout reset time in minutes (0-255)."
+        },
+        "lockout_limit": {
+          "name": "Lockout Limit",
+          "description": "Maximum number of allowed setpoint changes before lockout (0-20)."
+        }
+      }
+    },
+    "configure_cos": {
+      "name": "Configure COS",
+      "description": "Configure Change of State notifications.",
+      "fields": {
+        "cos_flags": {
+          "name": "COS Flags",
+          "description": "Change of State flags to enable."
+        }
+      }
+    }
+  }
+}
