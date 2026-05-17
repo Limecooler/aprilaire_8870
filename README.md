@@ -240,6 +240,13 @@ Yes, this integration works with all Home Assistant installation types. For cont
 
 When you control the thermostat through Home Assistant, it uses the network override feature of the Aprilaire thermostat. This is normal behavior.
 
+## References
+
+Manufacturer documentation — useful for wiring questions, network addressing, and the protocol commands this integration speaks:
+
+- [Aprilaire Whole System Installation Guide (PDF)](https://www.homecontrols.com/homecontrols/products/pdfs/RP-AprilAire/Aprilaire_Whole_System_Installation.pdf) — RS-485 network topology, wiring, multi-thermostat addressing.
+- [Aprilaire 8870 Thermostat Owner's Manual (PDF)](https://www.aprilaire.com/docs/default-source/product-owners-manuals/Thermostat/aprilaire-thermostat-model-8870-owners-manual-obs.pdf?sfvrsn=6) — thermostat configuration, on-device menus, and the network address setting referenced in the troubleshooting section above.
+
 ## Support
 
 If you need assistance:
