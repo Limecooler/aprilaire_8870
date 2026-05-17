@@ -667,58 +667,50 @@ class ComPortConnection(AprilaireConnectionBase):
                 await self.async_reconnect()
             return None
 
-    class ConnectionManager:
-        """Manage connections to Aprilaire thermostats."""
-        
-        def __init__(self, hass: HomeAssistant):
-            """Initialize the connection manager."""
-            self.hass = hass
-            self._connections = {}
-            
-        async def async_get_connection(self, config: Dict[str, Any]) -> AprilaireConnectionBase:
-            """Get or create a connection based on configuration."""
-            # Generate connection key
-            conn_type = config.get("connection_type")
-            
-            if conn_type == CONN_TYPE_SERIAL_SERVER:
-                key = f"serial_server_{config['host']}_{config.get('port', DEFAULT_PORT)}"
-            elif conn_type == CONN_TYPE_SERIAL_PORT:
-                key = f"serial_port_{config['port_name']}"
-            else:
-                raise ValueError(f"Unsupported connection type: {conn_type}")
-                
-            # Return existing connection if available
-            if key in self._connections:
-                connection = self._connections[key]
-                if not connection.is_connected():
-                    await connection.async_connect()
-                return connection
-                
-            # Create new connection. (conn_type was already validated above,
-            # so the only two branches that can reach here are these two.)
-            if conn_type == CONN_TYPE_SERIAL_SERVER:
-                connection = SerialServerConnection(self.hass, config)
-            else:
-                connection = ComPortConnection(self.hass, config)
 
-            await connection.async_connect()
-            self._connections[key] = connection
+
+class ConnectionManager:
+    """Manage Aprilaire bus connections, keyed by connection type and identity."""
+
+    def __init__(self, hass: HomeAssistant):
+        self.hass = hass
+        self._connections: Dict[str, AprilaireConnectionBase] = {}
+
+    async def async_get_connection(self, config: Dict[str, Any]) -> AprilaireConnectionBase:
+        """Get or create a connection based on configuration."""
+        conn_type = config.get("connection_type")
+        if conn_type == CONN_TYPE_SERIAL_SERVER:
+            key = f"serial_server_{config['host']}_{config.get('port', DEFAULT_PORT)}"
+        elif conn_type == CONN_TYPE_SERIAL_PORT:
+            key = f"serial_port_{config['port_name']}"
+        else:
+            raise ValueError(f"Unsupported connection type: {conn_type}")
+
+        if key in self._connections:
+            connection = self._connections[key]
+            if not connection.is_connected():
+                await connection.async_connect()
             return connection
 
-        async def async_close_connection(self, connection: AprilaireConnectionBase) -> None:
-            """Close a specific connection."""
-            for key, stored_connection in list(self._connections.items()):
-                if stored_connection is connection:
-                    await connection.async_disconnect()
-                    del self._connections[key]
-                    return
+        if conn_type == CONN_TYPE_SERIAL_SERVER:
+            connection = SerialServerConnection(self.hass, config)
+        else:
+            connection = ComPortConnection(self.hass, config)
+        await connection.async_connect()
+        self._connections[key] = connection
+        return connection
 
-        async def async_close_all(self) -> None:
-            """Close all connections."""
-            for key, connection in list(self._connections.items()):
+    async def async_close_connection(self, connection: AprilaireConnectionBase) -> None:
+        for key, stored in list(self._connections.items()):
+            if stored is connection:
                 await connection.async_disconnect()
                 del self._connections[key]
+                return
 
-        async def async_shutdown(self) -> None:
-            """Shutdown the connection manager."""
-            await self.async_close_all()
+    async def async_close_all(self) -> None:
+        for key, connection in list(self._connections.items()):
+            await connection.async_disconnect()
+            del self._connections[key]
+
+    async def async_shutdown(self) -> None:
+        await self.async_close_all()

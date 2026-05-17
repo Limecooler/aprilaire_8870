@@ -9,6 +9,7 @@ import pytest
 from custom_components.aprilaire_8870.connection import (
     AprilaireConnectionBase,
     ComPortConnection,
+    ConnectionManager,
     SerialProtocol,
     SerialServerConnection,
     STATE_CONNECTED,
@@ -710,7 +711,7 @@ async def test_serial_protocol_connection_lost_triggers_reconnect(hass) -> None:
 
 
 async def test_connection_manager_reconnects_cached(hass) -> None:
-    mgr = ComPortConnection.ConnectionManager(hass)
+    mgr = ConnectionManager(hass)
     fake = MagicMock()
     fake.is_connected = MagicMock(return_value=False)
     fake.async_connect = AsyncMock(return_value=True)
@@ -741,7 +742,7 @@ async def test_send_with_response_skips_mismatched_command_finds_match(hass) -> 
 
 
 async def test_connection_manager_serial_server(hass) -> None:
-    mgr = ComPortConnection.ConnectionManager(hass)
+    mgr = ConnectionManager(hass)
     with patch(
         "custom_components.aprilaire_8870.connection.telnetlib3.open_connection",
         new=AsyncMock(return_value=(_FakeReader(), _FakeWriter())),
@@ -762,7 +763,7 @@ async def test_connection_manager_serial_server(hass) -> None:
 
 
 async def test_connection_manager_serial_port(hass) -> None:
-    mgr = ComPortConnection.ConnectionManager(hass)
+    mgr = ConnectionManager(hass)
     with patch(
         "custom_components.aprilaire_8870.connection.serial_asyncio.create_serial_connection",
         new=AsyncMock(return_value=(MagicMock(), MagicMock())),
@@ -774,13 +775,13 @@ async def test_connection_manager_serial_port(hass) -> None:
 
 
 async def test_connection_manager_bad_type(hass) -> None:
-    mgr = ComPortConnection.ConnectionManager(hass)
+    mgr = ConnectionManager(hass)
     with pytest.raises(ValueError):
         await mgr.async_get_connection({"connection_type": "bogus"})
 
 
 async def test_connection_manager_close_specific(hass) -> None:
-    mgr = ComPortConnection.ConnectionManager(hass)
+    mgr = ConnectionManager(hass)
     fake = MagicMock()
     fake.async_disconnect = AsyncMock()
     mgr._connections["k"] = fake
@@ -789,13 +790,13 @@ async def test_connection_manager_close_specific(hass) -> None:
 
 
 async def test_connection_manager_close_unknown(hass) -> None:
-    mgr = ComPortConnection.ConnectionManager(hass)
+    mgr = ConnectionManager(hass)
     # No-op — never raises.
     await mgr.async_close_connection(MagicMock())
 
 
 async def test_connection_manager_close_all_and_shutdown(hass) -> None:
-    mgr = ComPortConnection.ConnectionManager(hass)
+    mgr = ConnectionManager(hass)
     fake = MagicMock()
     fake.async_disconnect = AsyncMock()
     mgr._connections["k"] = fake

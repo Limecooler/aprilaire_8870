@@ -29,7 +29,6 @@ from .const import (
     DEFAULT_PORT,
     DEFAULT_BAUDRATE,
     DEFAULT_UPDATE_INTERVAL,
-    DEFAULT_SCAN_INTERVAL,
     DEFAULT_FALLBACK_SCAN_INTERVAL,
     DEFAULT_COS_VERIFICATION_INTERVAL,
     CONF_FALLBACK_SCAN_INTERVAL,
@@ -318,7 +317,7 @@ class AprilaireConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         self.connection_config["device_names"] = device_names
 
         # Set default values
-        self.connection_config[CONF_SCAN_INTERVAL] = DEFAULT_SCAN_INTERVAL
+        self.connection_config[CONF_SCAN_INTERVAL] = DEFAULT_UPDATE_INTERVAL
         self.connection_config[CONF_ENABLE_COS] = True
         
         # Create entry

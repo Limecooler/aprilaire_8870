@@ -33,9 +33,14 @@ CONN_TYPE_SERIAL_PORT: Final = "serial_port"  # Alias for compatibility
 # Default configuration values
 DEFAULT_PORT: Final = 23
 DEFAULT_BAUDRATE: Final = 9600
-DEFAULT_SCAN_INTERVAL: Final = 600  # 10 minutes
-DEFAULT_UPDATE_INTERVAL: Final = 600  # 10 minutes
-DEFAULT_FALLBACK_SCAN_INTERVAL: Final = 300  # 5 min: backstop for unsolicited COS-style broadcasts
+# Two distinct poll cadences:
+# * DEFAULT_UPDATE_INTERVAL — used once COS verification confirms broadcasts
+#   are flowing for the majority of devices; trust broadcasts to keep state
+#   fresh between these slow polls.
+# * DEFAULT_FALLBACK_SCAN_INTERVAL — used at startup and any time broadcasts
+#   aren't being received; the integration's primary state path.
+DEFAULT_UPDATE_INTERVAL: Final = 600  # 10 minutes — slow poll after COS verified
+DEFAULT_FALLBACK_SCAN_INTERVAL: Final = 300  # 5 minutes — backstop poll cadence
 DEFAULT_COS_VERIFICATION_INTERVAL: Final = 1800  # 30 minutes
 DEFAULT_NAME: Final = "Aprilaire 8870 Thermostat"
 

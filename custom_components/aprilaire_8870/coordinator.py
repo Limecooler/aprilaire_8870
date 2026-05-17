@@ -101,8 +101,8 @@ class AprilaireDataUpdateCoordinator(DataUpdateCoordinator):
             COS_FLAG_ALARMS,
             COS_FLAG_ERRORS,
         }
-        self._fallback_scan_interval = fallback_scan_interval
-        self._normal_scan_interval = update_interval
+        self._poll_backstop = fallback_scan_interval
+        self._poll_healthy = update_interval
         self._cos_verification_interval = cos_verification_interval
         self._last_cos_verification = None
         self._cos_verified = False
@@ -302,13 +302,13 @@ class AprilaireDataUpdateCoordinator(DataUpdateCoordinator):
             _LOGGER.info(
                 "COS active on %d/%d devices — using normal scan interval", verified, total
             )
-            self.update_interval = timedelta(seconds=self._normal_scan_interval)
+            self.update_interval = timedelta(seconds=self._poll_healthy)
         else:
             _LOGGER.warning(
                 "COS active on only %d/%d devices — staying on fallback scan interval",
                 verified, total,
             )
-            self.update_interval = timedelta(seconds=self._fallback_scan_interval)
+            self.update_interval = timedelta(seconds=self._poll_backstop)
 
         return cos_healthy
 

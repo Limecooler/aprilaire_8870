@@ -8,7 +8,8 @@ def test_basic_constants() -> None:
     assert const.DOMAIN == "aprilaire_8870"
     assert const.DEFAULT_PORT == 23
     assert const.DEFAULT_BAUDRATE == 9600
-    assert const.DEFAULT_SCAN_INTERVAL == 600
+    assert const.DEFAULT_UPDATE_INTERVAL == 600
+    assert const.DEFAULT_FALLBACK_SCAN_INTERVAL == 300
 
 
 def test_default_cos_flags_subset() -> None:

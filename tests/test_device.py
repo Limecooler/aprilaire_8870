@@ -1225,37 +1225,6 @@ async def test_update_with_delays_optional_exception(monkeypatch) -> None:
     assert calls["n"] > 1  # continued past the failure
 
 
-async def test_update_alarm_statuses() -> None:
-    dev, conn, _ = make_device()
-    conn.responses["SN1 FLTALM?"] = "SN1 FLTALM=ON"
-    conn.responses["SN1 WPALM?"] = "SN1 WPALM=OFF"
-    conn.responses["SN1 SYSALM?"] = "SN1 SYSALM=ON"
-    conn.responses["SN1 DEHALM?"] = "SN1 DEHALM=OFF"
-    await dev._update_alarm_statuses()
-    assert dev._state["filter_alarm"] is True
-    assert dev._state["water_panel_alarm"] is False
-    assert dev._state["system_alarm"] is True
-
-
-async def test_update_alarm_statuses_exception() -> None:
-    dev, _, proto = make_device()
-    proto.execute_query_command = AsyncMock(side_effect=RuntimeError("boom"))
-    await dev._update_alarm_statuses()  # swallowed
-
-
-async def test_update_error_status() -> None:
-    dev, conn, _ = make_device()
-    conn.responses["SN1 ERROR?"] = "SN1 ERROR=001000"
-    await dev._update_error_status()
-    assert dev._state["error_status"] == "001000"
-
-
-async def test_update_error_status_exception() -> None:
-    dev, _, proto = make_device()
-    proto.execute_query_command = AsyncMock(side_effect=RuntimeError("boom"))
-    await dev._update_error_status()  # swallowed
-
-
 # ---- AprilaireDeviceManager ------------------------------------------------
 
 

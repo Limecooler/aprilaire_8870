@@ -197,7 +197,7 @@ async def test_verify_cos_all_devices_pass(hass) -> None:
     coord = make_coord(hass, devices={1: dev})
     assert await coord.async_verify_cos_functionality() is True
     # Switched to long interval.
-    assert coord.update_interval == timedelta(seconds=coord._normal_scan_interval)
+    assert coord.update_interval == timedelta(seconds=coord._poll_healthy)
 
 
 async def test_verify_cos_majority_pass(hass) -> None:
@@ -216,7 +216,7 @@ async def test_verify_cos_minority_pass(hass) -> None:
     devs[3].async_verify_cos = AsyncMock(return_value=False)
     coord = make_coord(hass, devices=devs)
     assert await coord.async_verify_cos_functionality() is False
-    assert coord.update_interval == timedelta(seconds=coord._fallback_scan_interval)
+    assert coord.update_interval == timedelta(seconds=coord._poll_backstop)
 
 
 async def test_verify_cos_device_raises(hass) -> None:

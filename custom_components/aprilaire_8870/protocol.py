@@ -297,18 +297,32 @@ class AprilaireProtocol:
                 else:
                     # Fallback to standard method
                     formatted_command = f"SN{device_id} {command}?"
-                    
+
                     # Clear any previous received messages
                     if hasattr(self._connection, 'get_received_messages'):
                         self._connection.get_received_messages()
-                    
+
                     # Send the command
                     _LOGGER.debug("Sending command: %s", formatted_command)
                     await self._connection.async_send_command(formatted_command)
-                    
-                    # Wait for response - longer timeout for reliability
-                    await asyncio.sleep(timeout or COMMAND_TIMEOUT)
-                    
+
+                    # Poll for a matching response instead of sleeping the
+                    # full timeout. Releases the lock-equivalent wait early
+                    # when the device answers quickly, which is the common
+                    # case — the prior implementation held the bus idle for
+                    # the entire timeout window even on a 50ms response.
+                    deadline = (timeout or COMMAND_TIMEOUT)
+                    interval = 0.1
+                    elapsed = 0.0
+                    device_prefix = f"SN{device_id}"
+                    while elapsed < deadline:
+                        if hasattr(self._connection, 'get_received_messages'):
+                            preview = list(self._connection._received_messages) if hasattr(self._connection, '_received_messages') else []
+                            if any(r.startswith(device_prefix) and command in r for r in preview):
+                                break
+                        await asyncio.sleep(interval)
+                        elapsed += interval
+
                     # Get received messages
                     if hasattr(self._connection, 'get_received_messages'):
                         responses = self._connection.get_received_messages()
@@ -380,12 +394,22 @@ class AprilaireProtocol:
                 _LOGGER.debug("Sending assignment command: %s", formatted_command)
                 await self._connection.async_send_command(formatted_command)
 
-                await asyncio.sleep(timeout or COMMAND_TIMEOUT)
+                # Poll-with-early-exit instead of full-timeout sleep.
+                deadline = (timeout or COMMAND_TIMEOUT)
+                interval = 0.1
+                elapsed = 0.0
+                device_prefix = f"SN{device_id}"
+                while elapsed < deadline:
+                    if hasattr(self._connection, '_received_messages'):
+                        preview = list(self._connection._received_messages)
+                        if any(r.startswith(device_prefix) and command in r for r in preview):
+                            break
+                    await asyncio.sleep(interval)
+                    elapsed += interval
 
                 if not hasattr(self._connection, "get_received_messages"):
                     return None
 
-                device_prefix = f"SN{device_id}"
                 for resp in self._connection.get_received_messages():
                     if resp.startswith(device_prefix) and command in resp:
                         return resp

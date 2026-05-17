@@ -163,6 +163,10 @@ class AprilaireDevice:
         self._state = real_device._state
         self._cos_enabled = real_device._cos_enabled
         self._cos_flags = real_device._cos_flags
+        # Carry over v0.2.7 unsupported-command tracking so a placeholder
+        # swap doesn't re-discover the same NACKs from scratch.
+        self._optional_failure_counts = dict(real_device._optional_failure_counts)
+        self._unsupported_commands = set(real_device._unsupported_commands)
 
     async def _update_with_delays(self) -> None:
         """Update device state with delays between commands."""
@@ -1271,40 +1275,6 @@ class AprilaireDevice:
         except (ValueError, TypeError):
             _LOGGER.error("Error parsing humidity value: %s", humidity_str)
             return None
-
-    async def _update_alarm_statuses(self) -> None:
-        """Update the alarm statuses (filter, water panel, system, dehumidifier)."""
-        try:
-            # Query filter alarm status
-            fltalm = await self.protocol.execute_query_command(self.address, "FLTALM")
-            if fltalm is not None:
-                self._state["filter_alarm"] = (fltalm == "ON")
-                
-            # Query water panel alarm status
-            wpalm = await self.protocol.execute_query_command(self.address, "WPALM")
-            if wpalm is not None:
-                self._state["water_panel_alarm"] = (wpalm == "ON")
-                
-            # Query system alarm status
-            sysalm = await self.protocol.execute_query_command(self.address, "SYSALM")
-            if sysalm is not None:
-                self._state["system_alarm"] = (sysalm == "ON")
-                
-            # Query dehumidifier alarm status
-            dehalm = await self.protocol.execute_query_command(self.address, "DEHALM")
-            if dehalm is not None:
-                self._state["dehumidifier_alarm"] = (dehalm == "ON")
-        except Exception as err:
-            _LOGGER.error("Error updating alarm statuses for thermostat %s: %s", self.address, err)
-
-    async def _update_error_status(self) -> None:
-        """Update the error status."""
-        try:
-            error = await self.protocol.execute_query_command(self.address, "ERROR")
-            if error is not None:
-                self._state["error_status"] = error
-        except Exception as err:
-            _LOGGER.error("Error updating error status for thermostat %s: %s", self.address, err)
 
     def _handle_specialized_cos_message(self, command: str, value: Any) -> bool:
         """Handle specialized COS messages (alarms, errors, etc.).
