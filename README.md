@@ -15,7 +15,7 @@ This custom integration allows you to control and monitor Aprilaire 8870 thermos
 
 ## Requirements
 
-- Home Assistant (2023.x or newer recommended)
+- Home Assistant **2024.1.0** or newer
 - One of the following connection methods:
   - **Serial Server**: A network-connected serial server with telnet capability (e.g., Moxa NPort)
   - **Direct Serial Connection**: RS-485 to USB/Serial adapter connected to your Home Assistant host
@@ -60,10 +60,10 @@ If your Home Assistant host is physically close to your Aprilaire thermostat net
 
 ### Option 2: Manual Installation
 
-1. Download the latest release from the [GitHub repository](https://github.com/Limecooler/aprilaire_8870)
-2. Create a directory `custom_components/aprilaire_8870` in your Home Assistant configuration directory
-3. Extract the contents of the release into the created directory
-4. Restart Home Assistant
+1. Download the **Source code (zip)** for the latest release from the [Releases page](https://github.com/Limecooler/aprilaire_8870/releases).
+2. Extract the archive.
+3. Copy the inner `custom_components/aprilaire_8870/` folder into your Home Assistant `config/custom_components/` directory so the final path is `config/custom_components/aprilaire_8870/manifest.json`.
+4. Restart Home Assistant.
 
 ## Configuration
 
@@ -137,20 +137,22 @@ Aprilaire thermostats use a 4-wire RS-485 network:
 
 The integration will create the following entities:
 
-- **Climate Entity**: Primary thermostat control
-- **Temperature Sensor**: Current temperature reading
-- **Humidity Sensor**: Current humidity reading (if supported)
-- **Outdoor Temperature Sensor**: Outdoor temperature (if connected to thermostat)
+- **Climate Entity**: Primary thermostat control (setpoints, mode, fan)
+- **Sensors**:
+  - Temperature (indoor)
+  - Humidity (if the thermostat has a humidity sensor)
+  - Outdoor Temperature (if connected to the thermostat)
+  - Outdoor Humidity (if connected to the thermostat)
 - **Binary Sensors**:
-  - Heating Status
-  - Cooling Status
-  - Fan Running Status
-  - Filter Alert
-  - System Error
+  - HVAC Status (any heating/cooling stage active)
+  - Fan Status (fan currently running)
+  - Filter Status (filter change due)
+  - Error Status (any thermostat error active)
+  - Network Override (HOLD active from the network side)
 - **Switches**:
   - Fan Override (Auto/On)
   - Network Override (Hold)
-  - Constant Backlight
+  - Backlight
 
 ## Services
 
