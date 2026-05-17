@@ -44,6 +44,15 @@ STORAGE_VERSION = 1
 # Storage key for state persistence
 STORAGE_KEY = f"{DOMAIN}.state"
 
+# v0.3.0 capability cache: model/firmware/capabilities don't change unless
+# a thermostat is replaced. Caching them skips EQUIPCONFIG?/CT? on every
+# startup (~1.5s × N devices). Keyed by (entry_id, address) so removing
+# the integration entry forces a fresh discovery.
+CAPABILITY_CACHE_VERSION = 1
+CAPABILITY_CACHE_KEY = f"{DOMAIN}.capabilities"
+# Maximum cache age before we re-discover from scratch as a sanity check.
+CAPABILITY_CACHE_TTL_SECONDS = 30 * 24 * 60 * 60  # 30 days
+
 
 class AprilaireDataUpdateCoordinator(DataUpdateCoordinator):
     """Class to manage fetching Aprilaire thermostat data."""
@@ -108,6 +117,12 @@ class AprilaireDataUpdateCoordinator(DataUpdateCoordinator):
         self._cos_verified = False
         self._connection_state = False
         self._store = Store(hass, STORAGE_VERSION, STORAGE_KEY)
+        # Capability cache: persists model/firmware/capabilities so per-device
+        # init can skip EQUIPCONFIG?/CT? when the device hasn't changed.
+        self._cap_store = Store(
+            hass, CAPABILITY_CACHE_VERSION, CAPABILITY_CACHE_KEY
+        )
+        self._capability_cache: Dict[str, Dict[str, Any]] = {}
         self._cached_state = None
         self._state_loaded = False
 
@@ -165,6 +180,68 @@ class AprilaireDataUpdateCoordinator(DataUpdateCoordinator):
                 _LOGGER.debug("No stored state found")
         except Exception as ex:
             _LOGGER.error("Error loading stored state: %s", ex)
+
+    async def async_load_capability_cache(self, entry_id: str) -> None:
+        """Load the persisted capability cache for this entry.
+
+        Populates ``self._capability_cache`` with whatever fits the
+        ``<entry_id>:<address>`` key prefix; entries older than the TTL
+        are silently dropped. Cheap to call repeatedly.
+        """
+        try:
+            stored = await self._cap_store.async_load() or {}
+        except Exception as ex:  # pragma: no cover  (storage layer rare path)
+            _LOGGER.warning("Error loading capability cache: %s", ex)
+            return
+
+        prefix = f"{entry_id}:"
+        now_ts = dt_util.utcnow().timestamp()
+        cutoff = now_ts - CAPABILITY_CACHE_TTL_SECONDS
+        self._capability_cache = {}
+        for key, entry in stored.items():
+            if not key.startswith(prefix):
+                continue
+            ts = entry.get("cached_at_ts")
+            if isinstance(ts, (int, float)) and ts < cutoff:
+                continue
+            self._capability_cache[key] = entry
+
+    def get_cached_capabilities(
+        self, entry_id: str, address: int
+    ) -> Optional[Dict[str, Any]]:
+        """Return cached capabilities for (entry, address) or None."""
+        return self._capability_cache.get(f"{entry_id}:{address}")
+
+    async def async_save_capability_cache_entry(
+        self,
+        entry_id: str,
+        address: int,
+        model: Optional[str],
+        firmware_version: Optional[str],
+        capabilities: Dict[str, Any],
+    ) -> None:
+        """Persist one device's capabilities. Reads the on-disk cache first
+        so we don't blow away other entries' / other devices' data."""
+        try:
+            stored = await self._cap_store.async_load() or {}
+        except Exception as ex:  # pragma: no cover
+            _LOGGER.warning("Error loading capability cache pre-save: %s", ex)
+            stored = {}
+
+        key = f"{entry_id}:{address}"
+        stored[key] = {
+            "model": model,
+            "firmware_version": firmware_version,
+            "capabilities": dict(capabilities or {}),
+            "cached_at_ts": dt_util.utcnow().timestamp(),
+        }
+        # Mirror into our in-memory view too so subsequent lookups in the
+        # same process see the fresh entry without re-reading disk.
+        self._capability_cache[key] = stored[key]
+        try:
+            await self._cap_store.async_save(stored)
+        except Exception as ex:  # pragma: no cover
+            _LOGGER.warning("Error saving capability cache: %s", ex)
 
     async def _async_save_state(self) -> None:
         """Save current state to storage."""

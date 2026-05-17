@@ -365,9 +365,22 @@ class AprilaireDevice:
                 _LOGGER.error("Failed to query device information for thermostat %s", self.address)
                 return False
 
-            # Parse model info
+            # Parse model info — also extracts the location-name prefix into
+            # self.name and the model + firmware_version fields.
             _LOGGER.debug("Parsing model info: %s", model_info)
             self._parse_model_info(model_info)
+
+            # v0.3.0 capability cache hit: if the coordinator has a cached
+            # snapshot of capabilities for this address AND the model/firmware
+            # match what we just read off the bus, skip EQUIPCONFIG?/CT? and
+            # use the cached values. Saves ~1s per device on warm starts.
+            if self._try_hydrate_from_capability_cache():
+                _LOGGER.debug(
+                    "Hydrated thermostat %s capabilities from cache (model=%s fw=%s)",
+                    self.address, self.model, self.firmware_version,
+                )
+                # Skip ahead to the essential-state queries.
+                return await self._async_query_initial_state()
             
             # Query essential device capabilities
             # These queries are important but we continue even if they fail
@@ -402,72 +415,108 @@ class AprilaireDevice:
                 _LOGGER.error("Traceback: %s", traceback.format_exc())
                 # Continue with default capabilities
                 
-            # Get minimal essential state - just enough to prove device works
-            try:
-                # Get current temperature and mode
-                _LOGGER.debug("Querying temperature for thermostat %s", self.address)
-                temp_response = await self._send_command_with_retry(
-                    f"SN{self.address} TEMP?", 
-                    retries=2
-                )
-                if temp_response:
-                    _LOGGER.debug("Received temperature: %s", temp_response)
-                    self._process_state_response("TEMP", temp_response)
-                else:
-                    _LOGGER.warning("No temperature response received for thermostat %s", self.address)
-                    
-                _LOGGER.debug("Querying mode for thermostat %s", self.address)
-                mode_response = await self._send_command_with_retry(
-                    f"SN{self.address} MODE?", 
-                    retries=2
-                )
-                if mode_response:
-                    _LOGGER.debug("Received mode: %s", mode_response)
-                    self._process_state_response("MODE", mode_response)
-                else:
-                    _LOGGER.warning("No mode response received for thermostat %s", self.address)
-                    
-                # Setpoints are also essential for climate control
-                if self._state.get("mode") in ["HEAT", "AUTO", "EMHT"]:
-                    _LOGGER.debug("Querying heat setpoint for thermostat %s", self.address)
-                    heat_sp = await self._send_command_with_retry(
-                        f"SN{self.address} SH?", 
-                        retries=2,
-                        allow_skip=True
-                    )
-                    if heat_sp:
-                        _LOGGER.debug("Received heat setpoint: %s", heat_sp)
-                        self._process_state_response("SH", heat_sp)
-                    else:
-                        _LOGGER.warning("No heat setpoint received for thermostat %s", self.address)
-                        
-                if self._state.get("mode") in ["COOL", "AUTO"]:
-                    _LOGGER.debug("Querying cool setpoint for thermostat %s", self.address)
-                    cool_sp = await self._send_command_with_retry(
-                        f"SN{self.address} SC?", 
-                        retries=2,
-                        allow_skip=True
-                    )
-                    if cool_sp:
-                        _LOGGER.debug("Received cool setpoint: %s", cool_sp)
-                        self._process_state_response("SC", cool_sp)
-                    else:
-                        _LOGGER.warning("No cool setpoint received for thermostat %s", self.address)
-            except Exception as state_ex:
-                _LOGGER.error("Error getting initial state for thermostat %s: %s", self.address, state_ex)
-                _LOGGER.error("Traceback: %s", traceback.format_exc())
-                # Continue even with partial state
-            
-            # Mark device as available now that we have basic functionality
-            self.available = True
-            _LOGGER.debug("Completed initialization for thermostat %s", self.address)
-            return True
-            
+            # Persist capabilities so the next startup can skip these
+            # commands. Fire-and-forget; failure here doesn't affect init.
+            await self._async_persist_capabilities()
+
+            return await self._async_query_initial_state()
+
         except Exception as err:
             _LOGGER.error("Error initializing thermostat %s: %s", self.address, err)
             _LOGGER.error("Traceback: %s", traceback.format_exc())
             self.available = False
             return False
+
+    def _try_hydrate_from_capability_cache(self) -> bool:
+        """If the coordinator has a matching cached entry, hydrate self.
+
+        Cache match requires both model and firmware_version to equal what
+        we just parsed off ID? — protects against silent thermostat swaps
+        on the same address.
+        """
+        entry_id = getattr(self.coordinator, "config_entry_id", None) or getattr(
+            self.coordinator, "entry_id", None
+        )
+        getter = getattr(self.coordinator, "get_cached_capabilities", None)
+        if entry_id is None or not callable(getter):
+            return False
+        cached = getter(entry_id, self.address)
+        if not cached:
+            return False
+        if cached.get("model") != self.model:
+            return False
+        if cached.get("firmware_version") != self.firmware_version:
+            return False
+        caps = cached.get("capabilities") or {}
+        if not caps:
+            return False
+        self.capabilities = dict(caps)
+        return True
+
+    async def _async_persist_capabilities(self) -> None:
+        """Save the current capability snapshot via the coordinator."""
+        entry_id = getattr(self.coordinator, "config_entry_id", None) or getattr(
+            self.coordinator, "entry_id", None
+        )
+        saver = getattr(self.coordinator, "async_save_capability_cache_entry", None)
+        if entry_id is None or not callable(saver):
+            return
+        try:
+            await saver(
+                entry_id, self.address, self.model, self.firmware_version,
+                self.capabilities,
+            )
+        except Exception as save_ex:  # pragma: no cover  (storage layer)
+            _LOGGER.debug(
+                "Failed to persist capabilities for thermostat %s: %s",
+                self.address, save_ex,
+            )
+
+    async def _async_query_initial_state(self) -> bool:
+        """Query the bare-minimum runtime state needed to declare the device available.
+
+        Split out of async_initialize so the capability-cache fast-path can
+        skip the EQUIPCONFIG/CT queries while still doing the state queries
+        (which always need to happen — state isn't cached).
+        """
+        try:
+            _LOGGER.debug("Querying temperature for thermostat %s", self.address)
+            temp_response = await self._send_command_with_retry(
+                f"SN{self.address} TEMP?", retries=2,
+            )
+            if temp_response:
+                self._process_state_response("TEMP", temp_response)
+            else:
+                _LOGGER.warning("No temperature response received for thermostat %s", self.address)
+
+            mode_response = await self._send_command_with_retry(
+                f"SN{self.address} MODE?", retries=2,
+            )
+            if mode_response:
+                self._process_state_response("MODE", mode_response)
+            else:
+                _LOGGER.warning("No mode response received for thermostat %s", self.address)
+
+            if self._state.get("mode") in ["HEAT", "AUTO", "EMHT"]:
+                heat_sp = await self._send_command_with_retry(
+                    f"SN{self.address} SH?", retries=2, allow_skip=True,
+                )
+                if heat_sp:
+                    self._process_state_response("SH", heat_sp)
+
+            if self._state.get("mode") in ["COOL", "AUTO"]:
+                cool_sp = await self._send_command_with_retry(
+                    f"SN{self.address} SC?", retries=2, allow_skip=True,
+                )
+                if cool_sp:
+                    self._process_state_response("SC", cool_sp)
+        except Exception as state_ex:
+            _LOGGER.error("Error getting initial state for thermostat %s: %s", self.address, state_ex)
+            _LOGGER.error("Traceback: %s", traceback.format_exc())
+
+        self.available = True
+        _LOGGER.debug("Completed initialization for thermostat %s", self.address)
+        return True
 
     async def _query_with_retries(
         self,

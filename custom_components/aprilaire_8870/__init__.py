@@ -321,6 +321,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         # makes AprilaireDevice.name correct from the first DeviceInfo build,
         # so HA's Name & Assign step shows the user's configured names.
         device_names = entry.data.get("device_names", {})
+        # Each device looks up cached capabilities by (entry_id, address) on
+        # init; pre-load the cache so the lookup is a dict access, not a disk
+        # read per device.
+        coordinator.config_entry_id = entry.entry_id
+        await coordinator.async_load_capability_cache(entry.entry_id)
         device_manager = AprilaireDeviceManager(
             coordinator,
             protocol,

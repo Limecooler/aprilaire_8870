@@ -301,6 +301,77 @@ def test_parse_humidity_value_error_branch() -> None:
     assert dev._parse_humidity("abc") is None
 
 
+# ---- capability cache (v0.3.0) ---------------------------------------------
+
+
+def test_try_hydrate_from_capability_cache_hit() -> None:
+    """Cache hit when model and firmware match — capabilities replace defaults."""
+    dev, _, _ = make_device(1)
+    dev.model = "8870"
+    dev.firmware_version = "1.2"
+    dev.coordinator = MagicMock()
+    dev.coordinator.config_entry_id = "entryA"
+    dev.coordinator.get_cached_capabilities = MagicMock(
+        return_value={
+            "model": "8870",
+            "firmware_version": "1.2",
+            "capabilities": {"is_heat_pump": True, "stages_heat": 2},
+        }
+    )
+    assert dev._try_hydrate_from_capability_cache() is True
+    assert dev.capabilities["is_heat_pump"] is True
+    assert dev.capabilities["stages_heat"] == 2
+
+
+def test_try_hydrate_cache_miss_when_no_entry() -> None:
+    dev, _, _ = make_device(1)
+    dev.coordinator = MagicMock()
+    dev.coordinator.config_entry_id = "entryA"
+    dev.coordinator.get_cached_capabilities = MagicMock(return_value=None)
+    assert dev._try_hydrate_from_capability_cache() is False
+
+
+def test_try_hydrate_cache_miss_when_model_differs() -> None:
+    """Different model under same address → no hydration (thermostat replaced)."""
+    dev, _, _ = make_device(1)
+    dev.model = "8870"
+    dev.firmware_version = "1.2"
+    dev.coordinator = MagicMock()
+    dev.coordinator.config_entry_id = "entryA"
+    dev.coordinator.get_cached_capabilities = MagicMock(
+        return_value={
+            "model": "DIFFERENT",
+            "firmware_version": "1.2",
+            "capabilities": {"is_heat_pump": True},
+        }
+    )
+    assert dev._try_hydrate_from_capability_cache() is False
+
+
+def test_try_hydrate_cache_miss_when_firmware_differs() -> None:
+    """Firmware bump invalidates the cache."""
+    dev, _, _ = make_device(1)
+    dev.model = "8870"
+    dev.firmware_version = "1.2"
+    dev.coordinator = MagicMock()
+    dev.coordinator.config_entry_id = "entryA"
+    dev.coordinator.get_cached_capabilities = MagicMock(
+        return_value={
+            "model": "8870",
+            "firmware_version": "2.0",
+            "capabilities": {"is_heat_pump": True},
+        }
+    )
+    assert dev._try_hydrate_from_capability_cache() is False
+
+
+def test_try_hydrate_no_coordinator_support_is_safe() -> None:
+    """Plain MagicMock coordinator without the helper just returns False."""
+    dev, _, _ = make_device(1)
+    dev.coordinator = MagicMock(spec=[])  # no methods/attrs at all
+    assert dev._try_hydrate_from_capability_cache() is False
+
+
 # ---- _parse_model_info ------------------------------------------------------
 
 

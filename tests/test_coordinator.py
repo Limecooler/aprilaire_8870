@@ -625,6 +625,60 @@ async def test_handle_bus_message_ignores_garbage(hass) -> None:
     dev._process_state_response.assert_not_called()
 
 
+async def test_capability_cache_load_filters_by_entry_and_ttl(hass) -> None:
+    """Loader drops entries from other config_entries AND stale entries."""
+    coord = make_coord(hass)
+    now_ts = 1_700_000_000.0  # arbitrary recent
+    coord._cap_store = MagicMock()
+    coord._cap_store.async_load = AsyncMock(return_value={
+        "entryA:1": {"model": "8870", "firmware_version": "1.2",
+                     "capabilities": {"is_heat_pump": False},
+                     "cached_at_ts": now_ts},
+        "entryA:2": {"model": "8870", "firmware_version": "1.2",
+                     "capabilities": {"is_heat_pump": True},
+                     # Stale: > 30 days old
+                     "cached_at_ts": now_ts - (40 * 86400)},
+        "entryB:1": {"model": "OTHER", "firmware_version": "x",
+                     "capabilities": {},
+                     "cached_at_ts": now_ts},
+    })
+    with patch("custom_components.aprilaire_8870.coordinator.dt_util.utcnow") as mock_now:
+        mock_now.return_value.timestamp.return_value = now_ts
+        await coord.async_load_capability_cache("entryA")
+    # Only the fresh entryA:1 should make it through.
+    assert "entryA:1" in coord._capability_cache
+    assert "entryA:2" not in coord._capability_cache
+    assert "entryB:1" not in coord._capability_cache
+
+
+def test_get_cached_capabilities_returns_dict_or_none(hass) -> None:
+    coord = make_coord(hass)
+    coord._capability_cache = {"e1:5": {"model": "8870"}}
+    assert coord.get_cached_capabilities("e1", 5) == {"model": "8870"}
+    assert coord.get_cached_capabilities("e1", 99) is None
+    assert coord.get_cached_capabilities("e2", 5) is None
+
+
+async def test_save_capability_cache_entry_preserves_other_entries(hass) -> None:
+    """Saving one device must not blow away cached entries for other devices."""
+    coord = make_coord(hass)
+    coord._cap_store = MagicMock()
+    coord._cap_store.async_load = AsyncMock(return_value={
+        "entryA:2": {"model": "old", "firmware_version": "0.0",
+                     "capabilities": {}, "cached_at_ts": 1.0},
+    })
+    coord._cap_store.async_save = AsyncMock()
+    await coord.async_save_capability_cache_entry(
+        "entryA", 5, "8870", "1.2", {"is_heat_pump": True}
+    )
+    saved = coord._cap_store.async_save.call_args.args[0]
+    assert "entryA:2" in saved  # preserved
+    assert saved["entryA:5"]["model"] == "8870"
+    assert saved["entryA:5"]["capabilities"] == {"is_heat_pump": True}
+    # In-memory mirror updated too.
+    assert coord._capability_cache["entryA:5"]["model"] == "8870"
+
+
 async def test_connection_reconnect_resets_unsupported_commands(hass) -> None:
     """When the bus reconnects, every device gets its unsupported set cleared."""
     dev1 = MagicMock()
