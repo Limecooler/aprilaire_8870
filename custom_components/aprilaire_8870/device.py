@@ -56,6 +56,13 @@ from .protocol import AprilaireProtocol
 # both tries failed (4 total attempts, ~4 wasted seconds per cycle).
 _UNSUPPORTED_THRESHOLD = 2
 
+# Circuit breaker for an unresponsive device. After this many consecutive
+# poll cycles where EVERY essential command timed out, drop the device to
+# a slow keep-alive (one TEMP? per cycle) until it answers again. Prevents
+# an offline thermostat from chewing ~45s/cycle on retries × essential
+# commands while keeping at least a heartbeat path for recovery.
+_CIRCUIT_BREAKER_THRESHOLD = 5
+
 _LOGGER = logging.getLogger(__name__)
 
 
@@ -145,6 +152,12 @@ class AprilaireDevice:
         # implement.
         self._optional_failure_counts: Dict[str, int] = {}
         self._unsupported_commands: Set[str] = set()
+        # Circuit-breaker state: count of consecutive poll cycles where
+        # nothing essential came back. Once it crosses _CIRCUIT_BREAKER_THRESHOLD
+        # the device enters a slow keep-alive mode (TEMP-only) until it
+        # answers again. Reset on any successful essential-command response.
+        self._consecutive_full_poll_failures: int = 0
+        self._slow_keepalive_mode: bool = False
 
     def update_from_real_device(self, real_device):
         """Update properties from a fully initialized device.
@@ -580,7 +593,8 @@ class AprilaireDevice:
 
         Called on a fresh connection so a firmware update that adds
         support for a previously-failing command starts working again
-        without requiring a HA restart.
+        without requiring a HA restart. Also clears the circuit breaker
+        — a freshly-connected bus should poll the device normally again.
         """
         if self._unsupported_commands or self._optional_failure_counts:
             _LOGGER.debug(
@@ -589,6 +603,8 @@ class AprilaireDevice:
             )
         self._unsupported_commands.clear()
         self._optional_failure_counts.clear()
+        self._consecutive_full_poll_failures = 0
+        self._slow_keepalive_mode = False
 
     async def async_update(self) -> bool:
         """Update device state by querying the thermostat with error handling."""
@@ -598,21 +614,28 @@ class AprilaireDevice:
         success = False
 
         try:
-            # Query essential items
-            essential_commands = [
-                ("TEMP", CMD_TEMP),
-                ("MODE", CMD_MODE),
-                ("FAN", CMD_FAN),
-                ("HVAC", CMD_HVAC),
-                ("HOLD", CMD_HOLD)
-            ]
+            # Circuit-breaker: if recent cycles all timed out, drop to a
+            # cheap TEMP-only keep-alive. A single successful response
+            # exits the slow mode and the next cycle restores the full
+            # query set.
+            if self._slow_keepalive_mode:
+                essential_commands = [("TEMP", CMD_TEMP)]
+            else:
+                essential_commands = [
+                    ("TEMP", CMD_TEMP),
+                    ("MODE", CMD_MODE),
+                    ("FAN", CMD_FAN),
+                    ("HVAC", CMD_HVAC),
+                    ("HOLD", CMD_HOLD)
+                ]
+                # Add setpoint queries based on current mode
+                mode = self._state.get("mode")
+                if mode in [MODE_HEAT, MODE_AUTO, MODE_EMHT]:
+                    essential_commands.append(("SH", CMD_SH))
+                if mode in [MODE_COOL, MODE_AUTO]:
+                    essential_commands.append(("SC", CMD_SC))
 
-            # Add setpoint queries based on current mode
-            mode = self._state.get("mode")
-            if mode in [MODE_HEAT, MODE_AUTO, MODE_EMHT]:
-                essential_commands.append(("SH", CMD_SH))
-            if mode in [MODE_COOL, MODE_AUTO]:
-                essential_commands.append(("SC", CMD_SC))
+            essential_responses_received = 0
 
             # Process essential commands with retries to mask transient bus glitches.
             for cmd_name, cmd in essential_commands:
@@ -623,6 +646,7 @@ class AprilaireDevice:
                         cmd, self.address,
                     )
                     continue
+                essential_responses_received += 1
                 if cmd_name == "TEMP":
                     self._state["temperature"] = self._parse_temperature(response)
                     success = True
@@ -639,6 +663,32 @@ class AprilaireDevice:
                     self._state["heat_setpoint"] = self._parse_temperature(response)
                 elif cmd_name == "SC":
                     self._state["cool_setpoint"] = self._parse_temperature(response)
+
+            # Circuit-breaker update. Any successful essential response
+            # resets the counter; a totally-silent cycle increments it.
+            if essential_responses_received > 0:
+                if self._slow_keepalive_mode:
+                    _LOGGER.info(
+                        "Thermostat %s answered after slow-keepalive; "
+                        "resuming full poll cycle",
+                        self.address,
+                    )
+                self._consecutive_full_poll_failures = 0
+                self._slow_keepalive_mode = False
+            else:
+                self._consecutive_full_poll_failures += 1
+                if (
+                    not self._slow_keepalive_mode
+                    and self._consecutive_full_poll_failures
+                    >= _CIRCUIT_BREAKER_THRESHOLD
+                ):
+                    self._slow_keepalive_mode = True
+                    _LOGGER.warning(
+                        "Thermostat %s unresponsive for %d cycles; dropping "
+                        "to slow TEMP-only keep-alive until it answers.",
+                        self.address,
+                        self._consecutive_full_poll_failures,
+                    )
 
             # Optional items - one retry with shorter timeout, allow skipping.
             # Each command group is gated on its own user-controlled toggle

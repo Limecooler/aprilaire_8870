@@ -85,6 +85,86 @@ def test_reset_unsupported_commands_clears_state() -> None:
     assert dev._optional_failure_counts == {}
 
 
+async def test_circuit_breaker_trips_after_five_silent_cycles() -> None:
+    """5 consecutive cycles with no essential responses → slow keep-alive."""
+    from custom_components.aprilaire_8870.device import AprilaireDevice
+    from custom_components.aprilaire_8870.protocol import AprilaireProtocol
+    from tests.conftest import StubConnection
+    conn = StubConnection({})  # nothing responds
+    proto = AprilaireProtocol(connection=conn)
+    dev = AprilaireDevice(7, MagicMock(), proto)
+    dev.available = True
+
+    with patch("custom_components.aprilaire_8870.device.asyncio.sleep", new=AsyncMock()):
+        for _ in range(5):
+            await dev.async_update()
+
+    assert dev._slow_keepalive_mode is True
+    assert dev._consecutive_full_poll_failures >= 5
+
+    # Next cycle should only send TEMP, not the full set.
+    conn.sent.clear()
+    with patch("custom_components.aprilaire_8870.device.asyncio.sleep", new=AsyncMock()):
+        await dev.async_update()
+    essential_cmds_sent = [c for c in conn.sent if any(
+        f" {x}?" in c for x in ("TEMP", "MODE", "FAN", "HVAC", "HOLD", "SH", "SC")
+    )]
+    # Only TEMP should be in the cycle while in slow mode.
+    assert all("TEMP" in c for c in essential_cmds_sent)
+
+
+async def test_circuit_breaker_recovers_on_first_response() -> None:
+    """One successful essential response exits slow mode and resets the counter."""
+    from custom_components.aprilaire_8870.device import AprilaireDevice
+    from custom_components.aprilaire_8870.protocol import AprilaireProtocol
+    from tests.conftest import StubConnection
+    conn = StubConnection({})
+    proto = AprilaireProtocol(connection=conn)
+    dev = AprilaireDevice(7, MagicMock(), proto)
+    dev.available = True
+    # Pretend we already tripped.
+    dev._slow_keepalive_mode = True
+    dev._consecutive_full_poll_failures = 5
+
+    # Now TEMP starts answering.
+    conn.responses["SN7 TEMP?"] = "SN7 TEMP=72F"
+    with patch("custom_components.aprilaire_8870.device.asyncio.sleep", new=AsyncMock()):
+        await dev.async_update()
+
+    assert dev._slow_keepalive_mode is False
+    assert dev._consecutive_full_poll_failures == 0
+
+
+async def test_circuit_breaker_does_not_trip_on_partial_success() -> None:
+    """If even one essential command answers, the counter resets."""
+    from custom_components.aprilaire_8870.device import AprilaireDevice
+    from custom_components.aprilaire_8870.protocol import AprilaireProtocol
+    from tests.conftest import StubConnection
+    conn = StubConnection({})
+    proto = AprilaireProtocol(connection=conn)
+    dev = AprilaireDevice(7, MagicMock(), proto)
+    dev.available = True
+    # Only TEMP answers; MODE/FAN/HVAC/HOLD all silent.
+    conn.responses["SN7 TEMP?"] = "SN7 TEMP=72F"
+
+    with patch("custom_components.aprilaire_8870.device.asyncio.sleep", new=AsyncMock()):
+        for _ in range(10):
+            await dev.async_update()
+
+    # Partial success on every cycle → never trips.
+    assert dev._slow_keepalive_mode is False
+    assert dev._consecutive_full_poll_failures == 0
+
+
+def test_reset_unsupported_commands_also_clears_circuit_breaker() -> None:
+    dev, _, _ = make_device()
+    dev._slow_keepalive_mode = True
+    dev._consecutive_full_poll_failures = 7
+    dev.reset_unsupported_commands()
+    assert dev._slow_keepalive_mode is False
+    assert dev._consecutive_full_poll_failures == 0
+
+
 async def test_async_update_skips_unsupported_after_two_cycles() -> None:
     """Two consecutive poll cycles where HUM times out → HUM stops being queried."""
     from custom_components.aprilaire_8870.device import AprilaireDevice
