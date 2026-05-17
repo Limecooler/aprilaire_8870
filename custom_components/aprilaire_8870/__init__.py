@@ -375,52 +375,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 
         raise ConfigEntryNotReady(f"Error connecting to Aprilaire network: {ex}") from ex
 
-async def _async_probe_device_names_live(
-    connection, addresses: list[int]
-) -> dict[str, str]:
-    """Probe each address with ID? and parse out the location-name prefix.
-
-    Mirrors the config_flow probe but runs against an already-connected
-    bus during entry setup. Used to backfill entries that were created
-    before v0.2.2 added discovery-time name capture.
-    """
-    if not connection or not addresses:
-        _LOGGER.warning(
-            "Name probe skipped: connection=%s addresses=%s",
-            "set" if connection else "None",
-            len(addresses) if addresses else 0,
-        )
-        return {}
-    names: dict[str, str] = {}
-    for address in addresses:
-        try:
-            await asyncio.sleep(0.1)
-            await connection.async_send_command(f"SN{address} ID?")
-            await asyncio.sleep(1.0)
-            responses = (
-                connection.get_received_messages()
-                if hasattr(connection, "get_received_messages")
-                else []
-            )
-            # Logged at WARNING so it lands in HA's system_log without needing
-            # debug logging on the whole integration — diagnostic for users
-            # whose thermostat names aren't being picked up.
-            _LOGGER.warning(
-                "Name probe address=%s responses=%r", address, responses
-            )
-            name = _parse_location_name(int(address), responses or [])
-            if name:
-                names[str(address)] = name
-                _LOGGER.warning(
-                    "Name probe matched address=%s name=%r", address, name
-                )
-        except Exception as probe_ex:
-            _LOGGER.warning(
-                "Name probe failed for thermostat %s: %s", address, probe_ex
-            )
-    return names
-
-
 async def _async_backfill_and_apply_device_names(
     hass: HomeAssistant,
     entry: ConfigEntry,
@@ -428,48 +382,51 @@ async def _async_backfill_and_apply_device_names(
     device_manager,
     devices: dict,
 ) -> None:
-    """Make sure HA's device registry reflects the on-device location names.
+    """Push location names captured during device init into HA's device registry.
 
-    1. If ``entry.data["device_names"]`` is empty, probe the live bus and
-       persist the result so we never have to probe again.
-    2. For each in-memory AprilaireDevice, push the current name into the
-       device registry — but only when the user hasn't customized the name
-       themselves (``name_by_user is None``).
+    Each AprilaireDevice has its ``name`` set inside ``_parse_model_info`` from
+    the response prefix to ``SN<addr> ID?`` (the first command run during
+    ``async_initialize``). This backfill collects those names from the already-
+    populated ``device.name`` attribute, persists them to ``entry.data`` for
+    inspection / future use, and updates HA's device registry — gated on
+    ``name_by_user is None`` so user-set names are never overwritten.
+
+    Replaces the v0.2.3 bus-probe approach: that probe ran *after* init had
+    already finished, by which point the connection's ``is_connected()`` flag
+    was often stale (the integration's init/coordinator updates race on the
+    same connection state). Reading from ``device.name`` avoids any new bus
+    traffic and any connection-state checks.
     """
-    stored_names: dict[str, str] = dict(entry.data.get("device_names") or {})
-    _LOGGER.warning(
-        "Name backfill starting: stored_names=%s devices=%d",
-        stored_names or "<empty>",
-        len(devices) if devices else 0,
+    if not devices:
+        _LOGGER.debug("Name backfill: no devices initialized, nothing to do")
+        return
+
+    discovered: dict[str, str] = {}
+    for address, device in devices.items():
+        name = getattr(device, "name", None)
+        if not name:
+            continue
+        # Skip the default "Aprilaire <N>" placeholder — only persist names
+        # that actually came off the bus.
+        if name == f"Aprilaire {address}":
+            continue
+        discovered[str(address)] = name
+
+    _LOGGER.info(
+        "Name backfill: collected %d location names from device init: %s",
+        len(discovered),
+        discovered,
     )
 
-    if not stored_names and devices:
-        _LOGGER.warning(
-            "Entry %s has no stored device names — probing live bus for %d devices",
-            entry.entry_id,
-            len(devices),
-        )
-        probed = await _async_probe_device_names_live(connection, list(devices.keys()))
-        _LOGGER.warning("Name probe complete: found %d names: %s", len(probed), probed)
-        if probed:
-            new_data = {**entry.data, "device_names": probed}
-            hass.config_entries.async_update_entry(entry, data=new_data)
-            stored_names = probed
-            # Push into in-memory devices so DeviceInfo follows.
-            device_manager.device_names = dict(probed)
-            for address_str, name in probed.items():
-                try:
-                    addr_int = int(address_str)
-                except ValueError:
-                    continue
-                device = devices.get(addr_int)
-                if device is not None:
-                    device.name = name
+    # Persist to entry.data so subsequent loads can seed device_manager
+    # without waiting for the first init cycle to finish.
+    stored = entry.data.get("device_names") or {}
+    if discovered and discovered != stored:
+        new_data = {**entry.data, "device_names": discovered}
+        hass.config_entries.async_update_entry(entry, data=new_data)
+        device_manager.device_names = dict(discovered)
 
-    if not stored_names:
-        _LOGGER.warning(
-            "Name backfill stopping: no stored names and probe returned nothing"
-        )
+    if not discovered:
         return
 
     registry = dr.async_get(hass)
@@ -477,7 +434,7 @@ async def _async_backfill_and_apply_device_names(
     skipped_user = 0
     skipped_match = 0
     skipped_missing = 0
-    for address_str, name in stored_names.items():
+    for address_str, name in discovered.items():
         entry_in_registry = registry.async_get_device(
             identifiers={(DOMAIN, address_str)}
         )
@@ -493,7 +450,7 @@ async def _async_backfill_and_apply_device_names(
             continue
         registry.async_update_device(entry_in_registry.id, name=name)
         renamed += 1
-    _LOGGER.warning(
+    _LOGGER.info(
         "Name backfill registry pass: renamed=%d skipped_user=%d skipped_unchanged=%d skipped_no_registry_entry=%d",
         renamed, skipped_user, skipped_match, skipped_missing,
     )

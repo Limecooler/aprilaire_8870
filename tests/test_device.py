@@ -243,6 +243,43 @@ def test_parse_model_info_garbage() -> None:
     dev._parse_model_info(None)  # type: ignore[arg-type]
 
 
+def test_parse_model_info_with_sn_prefix_and_location_name() -> None:
+    """Full response from the bus: SN<addr><name>  MODEL# ..."""
+    dev, _, _ = make_device(address=3)
+    dev._parse_model_info("SN3Master Bedroom  MODEL# 8870 REV: V1.2 - RPC 2002")
+    assert dev.name == "Master Bedroom"
+    assert dev.model == "8870"
+    # Firmware: parts[3] is "V1.2"; lstripping V → "1.2".
+    assert dev.firmware_version == "1.2"
+
+
+def test_parse_model_info_with_sn_prefix_no_location_name() -> None:
+    """Some thermostats have no location set — no two-space gap, no name."""
+    dev, _, _ = make_device(address=1)
+    original_name = dev.name
+    dev._parse_model_info("SN1 MODEL# 8870 REV: V1.2 - RPC 2002")
+    # Name unchanged (still the address-based default).
+    assert dev.name == original_name
+    assert dev.model == "8870"
+
+
+def test_parse_model_info_with_sn_prefix_other_address_does_not_apply() -> None:
+    """Prefix for a different address must not be misattributed."""
+    dev, _, _ = make_device(address=5)
+    original_name = dev.name
+    dev._parse_model_info("SN3Master Bedroom  MODEL# 8870 REV: V1.2 - RPC 2002")
+    # Different SN<addr> in prefix → no location name extracted.
+    assert dev.name == original_name
+
+
+def test_parse_model_info_idempotent_on_same_name() -> None:
+    dev, _, _ = make_device(address=3)
+    dev._parse_model_info("SN3Master Bedroom  MODEL# 8870 REV: V1.2 - RPC 2002")
+    first = dev.name
+    dev._parse_model_info("SN3Master Bedroom  MODEL# 8870 REV: V1.2 - RPC 2002")
+    assert dev.name == first == "Master Bedroom"
+
+
 # ---- _parse_equipment_config ------------------------------------------------
 
 

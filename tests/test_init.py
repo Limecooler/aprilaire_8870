@@ -9,7 +9,6 @@ from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.aprilaire_8870 import (
     _async_backfill_and_apply_device_names,
-    _async_probe_device_names_live,
     async_initialize_devices_background,
     async_register_services,
     async_setup,
@@ -375,62 +374,11 @@ async def test_setup_entry_outer_exception(hass) -> None:
             await async_setup_entry(hass, entry)
 
 
-# ---- device-name backfill (v0.2.3) ----------------------------------------
+# ---- device-name backfill (v0.2.6) ----------------------------------------
 
 
-class _FakeConn:
-    def __init__(self, responses_per_address: dict[int, list[str]]):
-        self._responses = responses_per_address
-        self._pending: list[str] = []
-        self.sent: list[str] = []
-
-    async def async_send_command(self, cmd: str) -> None:
-        self.sent.append(cmd)
-        # cmd shape: "SN<addr> ID?"
-        try:
-            addr = int(cmd.split()[0][2:])
-        except (ValueError, IndexError):
-            return
-        self._pending = list(self._responses.get(addr, []))
-
-    def get_received_messages(self) -> list[str]:
-        out = self._pending
-        self._pending = []
-        return out
-
-
-async def test_probe_device_names_live_finds_names() -> None:
-    conn = _FakeConn(
-        {
-            1: ["SN1Master Bedroom ID=8870"],
-            2: ["SN2 ID=8870"],
-            3: ["SN3Kitchen ID=8870"],
-        }
-    )
-    with patch("custom_components.aprilaire_8870.asyncio.sleep", new=AsyncMock()):
-        names = await _async_probe_device_names_live(conn, [1, 2, 3])
-    assert names == {"1": "Master Bedroom", "3": "Kitchen"}
-
-
-async def test_probe_device_names_live_handles_empty_inputs() -> None:
-    assert await _async_probe_device_names_live(None, [1, 2]) == {}
-    assert await _async_probe_device_names_live(_FakeConn({}), []) == {}
-
-
-async def test_probe_device_names_live_swallows_per_address_errors() -> None:
-    class _Boom(_FakeConn):
-        async def async_send_command(self, cmd: str) -> None:
-            if "SN2" in cmd:
-                raise RuntimeError("bus glitch")
-            await super().async_send_command(cmd)
-
-    conn = _Boom({1: ["SN1Foo ID=8870"], 3: ["SN3Bar ID=8870"]})
-    with patch("custom_components.aprilaire_8870.asyncio.sleep", new=AsyncMock()):
-        names = await _async_probe_device_names_live(conn, [1, 2, 3])
-    assert names == {"1": "Foo", "3": "Bar"}
-
-
-async def test_backfill_probes_then_renames_devices_in_registry(hass) -> None:
+async def test_backfill_renames_from_device_name(hass) -> None:
+    """Backfill reads device.name (set by _parse_model_info) and pushes to registry."""
     from homeassistant.helpers import device_registry as dr_helpers
 
     entry = MockConfigEntry(
@@ -449,41 +397,62 @@ async def test_backfill_probes_then_renames_devices_in_registry(hass) -> None:
             model="8870",
         )
 
-    conn = _FakeConn(
-        {
-            1: ["SN1Master Bedroom ID=8870"],
-            2: ["SN2Kitchen ID=8870"],
-        }
-    )
     device1 = MagicMock(address=1)
-    device1.name = "Aprilaire 1"
+    device1.name = "Master Bedroom"
     device2 = MagicMock(address=2)
-    device2.name = "Aprilaire 2"
+    device2.name = "Kitchen"
     device_manager = MagicMock()
     device_manager.device_names = {}
 
-    with patch("custom_components.aprilaire_8870.asyncio.sleep", new=AsyncMock()):
-        await _async_backfill_and_apply_device_names(
-            hass, entry, conn, device_manager, {1: device1, 2: device2}
-        )
+    await _async_backfill_and_apply_device_names(
+        hass, entry, MagicMock(), device_manager, {1: device1, 2: device2}
+    )
 
     assert entry.data["device_names"] == {"1": "Master Bedroom", "2": "Kitchen"}
-    assert device1.name == "Master Bedroom"
-    assert device2.name == "Kitchen"
     assert registry.async_get_device(identifiers={(DOMAIN, "1")}).name == "Master Bedroom"
     assert registry.async_get_device(identifiers={(DOMAIN, "2")}).name == "Kitchen"
 
 
-async def test_backfill_respects_user_set_name(hass) -> None:
+async def test_backfill_skips_default_placeholder_names(hass) -> None:
+    """Devices that never picked up a name keep the 'Aprilaire <addr>' fallback."""
     from homeassistant.helpers import device_registry as dr_helpers
 
     entry = MockConfigEntry(
         domain=DOMAIN,
-        data={
-            "connection_type": "serial_server",
-            "discovered_thermostats": [1],
-            "device_names": {"1": "Master Bedroom"},
-        },
+        data={"connection_type": "serial_server", "discovered_thermostats": [1, 2]},
+    )
+    entry.add_to_hass(hass)
+    registry = dr_helpers.async_get(hass)
+    for addr in (1, 2):
+        registry.async_get_or_create(
+            config_entry_id=entry.entry_id,
+            identifiers={(DOMAIN, str(addr))},
+            name=f"Aprilaire {addr}",
+            manufacturer="Aprilaire",
+            model="8870",
+        )
+
+    device1 = MagicMock(address=1)
+    device1.name = "Master Bedroom"
+    device2 = MagicMock(address=2)
+    device2.name = "Aprilaire 2"  # default placeholder, no name on device side
+
+    await _async_backfill_and_apply_device_names(
+        hass, entry, MagicMock(), MagicMock(), {1: device1, 2: device2}
+    )
+
+    # Only the real name persists.
+    assert entry.data["device_names"] == {"1": "Master Bedroom"}
+    assert registry.async_get_device(identifiers={(DOMAIN, "2")}).name == "Aprilaire 2"
+
+
+async def test_backfill_respects_user_set_name(hass) -> None:
+    """Devices the user already renamed in HA's UI are never overridden."""
+    from homeassistant.helpers import device_registry as dr_helpers
+
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={"connection_type": "serial_server", "discovered_thermostats": [1]},
     )
     entry.add_to_hass(hass)
 
@@ -498,50 +467,22 @@ async def test_backfill_respects_user_set_name(hass) -> None:
     registry.async_update_device(dev.id, name_by_user="My Special Name")
 
     device1 = MagicMock(address=1)
-    device1.name = "Aprilaire 1"
+    device1.name = "Master Bedroom"
 
     await _async_backfill_and_apply_device_names(
-        hass, entry, _FakeConn({}), MagicMock(), {1: device1}
+        hass, entry, MagicMock(), MagicMock(), {1: device1}
     )
 
     after = registry.async_get_device(identifiers={(DOMAIN, "1")})
     assert after.name_by_user == "My Special Name"
-    # Original "name" untouched too — we skip the whole rename when name_by_user is set.
     assert after.name == "Aprilaire 1"
 
 
-async def test_backfill_no_probe_when_device_names_already_present(hass) -> None:
-    from homeassistant.helpers import device_registry as dr_helpers
-
-    entry = MockConfigEntry(
-        domain=DOMAIN,
-        data={
-            "connection_type": "serial_server",
-            "discovered_thermostats": [1],
-            "device_names": {"1": "Den"},
-        },
-    )
+async def test_backfill_no_devices_returns_quickly(hass) -> None:
+    entry = MockConfigEntry(domain=DOMAIN, data={})
     entry.add_to_hass(hass)
-    registry = dr_helpers.async_get(hass)
-    registry.async_get_or_create(
-        config_entry_id=entry.entry_id,
-        identifiers={(DOMAIN, "1")},
-        name="Aprilaire 1",
-        manufacturer="Aprilaire",
-        model="8870",
-    )
-
-    conn = MagicMock()
-    conn.async_send_command = AsyncMock()
-    conn.get_received_messages = MagicMock(return_value=[])
-
-    device1 = MagicMock(address=1)
-    device1.name = "Aprilaire 1"
-
+    # Empty devices dict — should no-op, not raise.
     await _async_backfill_and_apply_device_names(
-        hass, entry, conn, MagicMock(), {1: device1}
+        hass, entry, MagicMock(), MagicMock(), {}
     )
-
-    conn.async_send_command.assert_not_called()
-    assert registry.async_get_device(identifiers={(DOMAIN, "1")}).name == "Den"
 

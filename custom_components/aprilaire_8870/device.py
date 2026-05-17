@@ -1018,17 +1018,45 @@ class AprilaireDevice:
             return False
 
     def _parse_model_info(self, model_info: str) -> None:
-        """Parse model information from ID command response.
-        
-        Args:
-            model_info: The response from the ID command
+        """Parse model information (and any location-name prefix) from ID response.
+
+        Two response shapes from the 8870:
+          ``SN1 MODEL# 8870 REV: V1.2 - RPC 2002``                 (no location name set)
+          ``SN1Master Bedroom  MODEL# 8870 REV: V1.2 - RPC 2002``  (location name set; two spaces before MODEL#)
+
+        We extract the location name (if any) into ``self.name`` so HA's
+        device registry can pick it up via DeviceInfo — no separate bus probe
+        needed, the bytes were already on the wire as part of the ID query
+        every device runs during init.
         """
-        # Expected format: "MODEL# 8870 REV: x.x RPC yyyy"
         try:
-            parts = model_info.split()
-            if len(parts) >= 6:
+            import re
+            # Strip "SN<addr>" prefix and capture any location name that sits
+            # between it and the MODEL# marker (separated by 2+ spaces, which
+            # is how the thermostat formats the boundary).
+            location_match = re.match(
+                rf"^SN{self.address}(.*?)\s{{2,}}MODEL#", model_info
+            )
+            if location_match:
+                location_name = location_match.group(1).strip()
+                if location_name and location_name != self.name:
+                    self.name = location_name
+                    _LOGGER.info(
+                        "Discovered location name for thermostat %s: %r",
+                        self.address,
+                        self.name,
+                    )
+
+            # Strip the SN<addr><name> prefix before parsing model/firmware so
+            # they don't get shifted by the location-name tokens. Look for the
+            # MODEL# marker and parse from there.
+            marker = model_info.find("MODEL#")
+            payload = model_info[marker:] if marker >= 0 else model_info
+            parts = payload.split()
+            # Expected: ["MODEL#", "8870", "REV:", "V1.2", "-", "RPC", "2002"]
+            if len(parts) >= 4 and parts[0] == "MODEL#":
                 self.model = parts[1]
-                self.firmware_version = parts[3]
+                self.firmware_version = parts[3].lstrip("V").rstrip(":")
         except Exception as err:
             _LOGGER.error("Error parsing model info for thermostat %s: %s", self.address, err)
 
