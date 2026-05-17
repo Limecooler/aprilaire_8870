@@ -2,7 +2,8 @@
 import asyncio
 import logging
 import traceback
-from typing import Any
+from dataclasses import dataclass, field
+from typing import Any, Dict, List
 
 import voluptuous as vol
 
@@ -30,12 +31,32 @@ from .protocol import AprilaireProtocol
 from .coordinator import AprilaireDataUpdateCoordinator
 from .device import AprilaireDeviceManager
 
+
+@dataclass
+class AprilaireRuntimeData:
+    """Per-config-entry runtime state, attached to ``ConfigEntry.runtime_data``.
+
+    Closes the v0.3.0 Bronze-rule ``runtime-data`` gap and removes the
+    stringly-keyed ``hass.data[DOMAIN][entry.entry_id]`` dict that every
+    platform was reaching into. Typed access, automatic lifecycle.
+    """
+
+    coordinator: "AprilaireDataUpdateCoordinator"
+    connection: "AprilaireConnectionBase"
+    device_manager: "AprilaireDeviceManager"
+    discovered_addresses: List[int]
+    devices: Dict[int, Any] = field(default_factory=dict)
+
+
+# Type alias so platform files can declare typed entry parameters.
+AprilaireConfigEntry = ConfigEntry  # ConfigEntry[AprilaireRuntimeData] on py3.12+
+
+
 _LOGGER = logging.getLogger(__name__)
 
 
 async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
-    """Set up the Aprilaire 8870 Thermostat component from yaml configuration."""
-    hass.data.setdefault(DOMAIN, {})
+    """No YAML configuration; setup happens per-entry via async_setup_entry."""
     return True
 
 async def async_register_services(hass: HomeAssistant) -> None:
@@ -119,7 +140,7 @@ async def async_initialize_devices_background(
             if device is None:
                 continue
             initialized_devices[address] = device
-            hass.data[DOMAIN][entry.entry_id]["devices"][address] = device
+            entry.runtime_data.devices[address] = device
 
             # Propagate freshly-fetched state into the coordinator so
             # entity listeners see it on the next refresh.
@@ -234,9 +255,7 @@ async def async_setup_cos_background(
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up Aprilaire 8870 Thermostat from a config entry with deferred initialization."""
     _LOGGER.debug("Setting up Aprilaire 8870 integration with entry: %s", entry.entry_id)
-    
-    hass.data.setdefault(DOMAIN, {})
-    
+
     # Create connection based on config entry
     connection = None
     try:
@@ -342,14 +361,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         # Set the device_manager in the coordinator
         coordinator.device_manager = device_manager
         
-        # Store initialized components in hass data
-        hass.data[DOMAIN][entry.entry_id] = {
-            "coordinator": coordinator,
-            "connection": connection,
-            "device_manager": device_manager,
-            "devices": {},  # Will be populated during background setup
-            "discovered_addresses": discovered_addresses,
-        }
+        # v0.3.0: typed runtime_data replaces the stringly-keyed
+        # hass.data[DOMAIN][entry.entry_id] dict.
+        entry.runtime_data = AprilaireRuntimeData(
+            coordinator=coordinator,
+            connection=connection,
+            device_manager=device_manager,
+            discovered_addresses=discovered_addresses,
+        )
         
         # Set up platforms first with minimal info
         _LOGGER.debug("Setting up platform entities")
@@ -493,31 +512,22 @@ async def async_update_options(hass: HomeAssistant, entry: ConfigEntry) -> None:
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Unload a config entry."""
     _LOGGER.debug("Unloading Aprilaire 8870 integration with entry: %s", entry.entry_id)
-    
-    # Import services here to avoid circular imports
-    from .services import async_unregister_services
-    
-    # Unload platforms
+
+    from .services import async_unregister_services  # avoid circular import
+
     unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
-    
+
     if unload_ok:
-        # Get coordinator and connection data
-        entry_data = hass.data[DOMAIN].pop(entry.entry_id)
-        coordinator = entry_data["coordinator"]
-        connection = entry_data["connection"]
-        
-        # Stop coordinator
-        await coordinator.async_shutdown()
-        
-        # Close connection
-        await connection.async_disconnect()
-        
-        # Check if this is the last entry for this domain
-        if not hass.data[DOMAIN]:
-            # Unregister services
+        runtime = entry.runtime_data
+        await runtime.coordinator.async_shutdown()
+        await runtime.connection.async_disconnect()
+        # If this was the last loaded entry, drop the shared services too.
+        loaded = [
+            e
+            for e in hass.config_entries.async_entries(DOMAIN)
+            if e.entry_id != entry.entry_id and e.state.recoverable
+        ]
+        if not loaded:
             await async_unregister_services(hass)
-            
-            # Delete the domain data completely if empty
-            del hass.data[DOMAIN]
-    
+
     return unload_ok

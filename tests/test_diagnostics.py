@@ -6,8 +6,18 @@ from unittest.mock import MagicMock
 import pytest
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
-from custom_components.aprilaire_8870 import diagnostics
+from custom_components.aprilaire_8870 import AprilaireRuntimeData, diagnostics
 from custom_components.aprilaire_8870.const import DOMAIN
+
+
+def _attach_runtime(entry, *, coordinator=None, connection=None, devices=None):
+    entry.runtime_data = AprilaireRuntimeData(
+        coordinator=coordinator if coordinator is not None else MagicMock(),
+        connection=connection if connection is not None else MagicMock(),
+        device_manager=MagicMock(),
+        discovered_addresses=[],
+        devices=devices if devices is not None else {},
+    )
 
 
 @pytest.fixture(autouse=True)
@@ -48,11 +58,7 @@ async def test_diagnostics_redacts_host(hass) -> None:
     conn.state = "connected"
     conn._connect_error_count = 0
 
-    hass.data.setdefault(DOMAIN, {})[entry.entry_id] = {
-        "coordinator": coord,
-        "devices": {1: _make_device(1)},
-        "connection": conn,
-    }
+    _attach_runtime(entry, coordinator=coord, devices={1: _make_device(1)}, connection=conn)
 
     diag = await diagnostics.async_get_config_entry_diagnostics(hass, entry)
     # Host is redacted.
@@ -90,10 +96,9 @@ async def test_diagnostics_handles_missing_update_interval(hass) -> None:
     coord = MagicMock()
     coord.update_interval = None
     coord.last_update_success = False
-    hass.data.setdefault(DOMAIN, {})[entry.entry_id] = {
-        "coordinator": coord,
-        "devices": {},
-        "connection": MagicMock(is_connected=MagicMock(return_value=False), state="error"),
-    }
+    _attach_runtime(
+        entry, coordinator=coord, devices={},
+        connection=MagicMock(is_connected=MagicMock(return_value=False), state="error"),
+    )
     diag = await diagnostics.async_get_config_entry_diagnostics(hass, entry)
     assert diag["coordinator"]["update_interval_seconds"] is None

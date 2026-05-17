@@ -12,10 +12,22 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from custom_components.aprilaire_8870 import AprilaireRuntimeData
 from custom_components.aprilaire_8870 import binary_sensor as bs
 from custom_components.aprilaire_8870 import sensor as sensor_mod
 from custom_components.aprilaire_8870 import switch as sw
 from custom_components.aprilaire_8870.const import DOMAIN
+
+
+def _make_runtime(coordinator, *, devices=None, discovered_addresses=None):
+    """Build an AprilaireRuntimeData for platform tests."""
+    return AprilaireRuntimeData(
+        coordinator=coordinator,
+        connection=MagicMock(),
+        device_manager=MagicMock(),
+        discovered_addresses=discovered_addresses or [],
+        devices=devices or {},
+    )
 
 
 # ---------- Shared helpers --------------------------------------------------
@@ -202,11 +214,11 @@ def test_sensor_extra_state_attributes_default() -> None:
 
 def test_sensor_setup_entry_creates_entities(hass) -> None:
     coord = make_coordinator(data={"1": {}, "2": {}})
-    hass.data[DOMAIN] = {
-        "abc": {"coordinator": coord, "devices": {"1": make_device(1)}, "discovered_addresses": ["1", "2"]}
-    }
     entry = MagicMock()
     entry.entry_id = "abc"
+    entry.runtime_data = _make_runtime(
+        coord, devices={"1": make_device(1)}, discovered_addresses=["1", "2"],
+    )
     added = []
 
     def fake_add(entities):
@@ -413,11 +425,11 @@ def test_binary_sensor_setup_entry(hass) -> None:
     coord = make_coordinator(data={})
     dev = make_device(1)
     dev.is_heat_pump = True  # add emergency-heat entity
-    hass.data[DOMAIN] = {
-        "abc": {"coordinator": coord, "devices": {"1": dev}, "discovered_addresses": ["1", "2"]}
-    }
     entry = MagicMock()
     entry.entry_id = "abc"
+    entry.runtime_data = _make_runtime(
+        coord, devices={"1": dev}, discovered_addresses=["1", "2"],
+    )
     added = []
 
     def fake_add(entities):
@@ -606,13 +618,11 @@ async def test_switch_subclass_not_implemented() -> None:
 
 def test_switch_setup_entry_with_devices(hass) -> None:
     coord = make_coordinator(data={"1": {}, "2": {}})
-    hass.data[DOMAIN] = {
-        "abc": {"coordinator": coord,
-                "devices": {"1": make_device(1)},
-                "discovered_addresses": ["1", "2"]}
-    }
     entry = MagicMock()
     entry.entry_id = "abc"
+    entry.runtime_data = _make_runtime(
+        coord, devices={"1": make_device(1)}, discovered_addresses=["1", "2"],
+    )
     added = []
 
     def fake_add(entities):
@@ -628,11 +638,11 @@ def test_switch_setup_entry_with_devices(hass) -> None:
 
 def test_switch_setup_entry_device_creation_error(hass, monkeypatch) -> None:
     coord = make_coordinator(data={})
-    hass.data[DOMAIN] = {
-        "abc": {"coordinator": coord, "devices": {}, "discovered_addresses": ["1"]}
-    }
     entry = MagicMock()
     entry.entry_id = "abc"
+    entry.runtime_data = _make_runtime(
+        coord, devices={}, discovered_addresses=["1"],
+    )
     added = []
 
     def boom(*args, **kwargs):
@@ -658,11 +668,11 @@ def test_switch_setup_entry_with_network_override_disabled(hass) -> None:
     coord = make_coordinator(data={"1": {}})
     dev = make_device(1)
     dev.network_override_enabled = False  # exercises the conditional branch
-    hass.data[DOMAIN] = {
-        "abc": {"coordinator": coord, "devices": {"1": dev}, "discovered_addresses": []}
-    }
     entry = MagicMock()
     entry.entry_id = "abc"
+    entry.runtime_data = _make_runtime(
+        coord, devices={"1": dev}, discovered_addresses=[],
+    )
     added = []
 
     def fake_add(entities):

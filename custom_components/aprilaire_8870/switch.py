@@ -26,9 +26,10 @@ async def async_setup_entry(
     async_add_entities: AddEntitiesCallback,
 ) -> None:
     """Set up Aprilaire switch entities based on a config entry."""
-    coordinator = hass.data[DOMAIN][config_entry.entry_id]["coordinator"]
-    devices = hass.data[DOMAIN][config_entry.entry_id].get("devices", {})
-    discovered_addresses = hass.data[DOMAIN][config_entry.entry_id].get("discovered_addresses", [])
+    runtime = config_entry.runtime_data
+    coordinator = runtime.coordinator
+    devices = runtime.devices
+    discovered_addresses = runtime.discovered_addresses
 
     entities: list[SwitchEntity] = []
     

@@ -55,9 +55,10 @@ async def async_setup_entry(
     async_add_entities: AddEntitiesCallback,
 ) -> None:
     """Set up Aprilaire climate based on config_entry."""
-    coordinator = hass.data[DOMAIN][entry.entry_id]["coordinator"]
-    devices = hass.data[DOMAIN][entry.entry_id]["devices"]
-    discovered_addresses = hass.data[DOMAIN][entry.entry_id]["discovered_addresses"]
+    runtime = entry.runtime_data
+    coordinator = runtime.coordinator
+    devices = runtime.devices
+    discovered_addresses = runtime.discovered_addresses
 
     entities: list[ClimateEntity] = []
     

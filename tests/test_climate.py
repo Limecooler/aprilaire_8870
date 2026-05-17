@@ -334,16 +334,17 @@ async def test_async_turn_off() -> None:
 
 
 def test_climate_setup_entry_creates_entities(hass) -> None:
+    from custom_components.aprilaire_8870 import AprilaireRuntimeData
     coord = make_coordinator(data={})
-    hass.data[DOMAIN] = {
-        "abc": {
-            "coordinator": coord,
-            "devices": {"1": make_device(1)},
-            "discovered_addresses": ["1", "2"],
-        }
-    }
     entry = MagicMock()
     entry.entry_id = "abc"
+    entry.runtime_data = AprilaireRuntimeData(
+        coordinator=coord,
+        connection=MagicMock(),
+        device_manager=MagicMock(),
+        discovered_addresses=["1", "2"],
+        devices={"1": make_device(1)},
+    )
     added = []
 
     def fake_add(entities):

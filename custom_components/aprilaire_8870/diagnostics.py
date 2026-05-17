@@ -17,10 +17,10 @@ async def async_get_config_entry_diagnostics(
     hass: HomeAssistant, entry: ConfigEntry
 ) -> dict[str, Any]:
     """Return diagnostics for a config entry."""
-    entry_data = hass.data.get(DOMAIN, {}).get(entry.entry_id, {})
-    coordinator = entry_data.get("coordinator")
-    devices = entry_data.get("devices", {})
-    connection = entry_data.get("connection")
+    runtime = getattr(entry, "runtime_data", None)
+    coordinator = getattr(runtime, "coordinator", None) if runtime else None
+    devices = getattr(runtime, "devices", {}) if runtime else {}
+    connection = getattr(runtime, "connection", None) if runtime else None
 
     devices_diag: dict[str, dict[str, Any]] = {}
     for address, device in devices.items():

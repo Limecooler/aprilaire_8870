@@ -8,6 +8,7 @@ import pytest
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.aprilaire_8870 import (
+    AprilaireRuntimeData,
     _async_backfill_and_apply_device_names,
     async_initialize_devices_background,
     async_register_services,
@@ -20,6 +21,20 @@ from custom_components.aprilaire_8870 import (
 from custom_components.aprilaire_8870.const import DOMAIN
 
 
+def _attach_runtime_data(entry, **overrides):
+    """Test helper: attach a minimal AprilaireRuntimeData to an entry."""
+    defaults = {
+        "coordinator": MagicMock(),
+        "connection": MagicMock(),
+        "device_manager": MagicMock(),
+        "discovered_addresses": [],
+        "devices": {},
+    }
+    defaults.update(overrides)
+    entry.runtime_data = AprilaireRuntimeData(**defaults)
+    return entry.runtime_data
+
+
 @pytest.fixture(autouse=True)
 def _enable(enable_custom_integrations):
     yield
@@ -29,8 +44,8 @@ def _enable(enable_custom_integrations):
 
 
 async def test_async_setup(hass) -> None:
+    # async_setup is a no-op since v0.3.0 (runtime_data migration).
     assert await async_setup(hass, {}) is True
-    assert DOMAIN in hass.data
 
 
 # ---- async_register_services ----------------------------------------------
@@ -70,7 +85,7 @@ async def test_initialize_devices_background_happy(hass) -> None:
 
     entry = MockConfigEntry(domain=DOMAIN, data={})
     entry.add_to_hass(hass)
-    hass.data.setdefault(DOMAIN, {})[entry.entry_id] = {"devices": {}}
+    _attach_runtime_data(entry)
 
     with patch("custom_components.aprilaire_8870.asyncio.sleep", new=AsyncMock()):
         await async_initialize_devices_background(hass, entry, coord, dm, [1, 2])
@@ -107,7 +122,7 @@ async def test_initialize_devices_runs_in_parallel(hass) -> None:
 
     entry = MockConfigEntry(domain=DOMAIN, data={})
     entry.add_to_hass(hass)
-    hass.data.setdefault(DOMAIN, {})[entry.entry_id] = {"devices": {}}
+    _attach_runtime_data(entry)
 
     await async_initialize_devices_background(hass, entry, coord, dm, [1, 2, 3, 4, 5])
     # All five should have overlapped — serial would max out at 1.
@@ -127,7 +142,7 @@ async def test_initialize_devices_handles_disconnected(hass) -> None:
     dm.async_setup_device = AsyncMock(return_value=None)
     entry = MockConfigEntry(domain=DOMAIN, data={})
     entry.add_to_hass(hass)
-    hass.data.setdefault(DOMAIN, {})[entry.entry_id] = {"devices": {}}
+    _attach_runtime_data(entry)
 
     with patch("custom_components.aprilaire_8870.asyncio.sleep", new=AsyncMock()):
         await async_initialize_devices_background(hass, entry, coord, dm, [1])
@@ -148,7 +163,7 @@ async def test_initialize_devices_setup_failure_continues(hass) -> None:
 
     entry = MockConfigEntry(domain=DOMAIN, data={})
     entry.add_to_hass(hass)
-    hass.data.setdefault(DOMAIN, {})[entry.entry_id] = {"devices": {}}
+    _attach_runtime_data(entry)
 
     with patch("custom_components.aprilaire_8870.asyncio.sleep", new=AsyncMock()):
         await async_initialize_devices_background(hass, entry, coord, dm, [1, 2])
@@ -167,7 +182,7 @@ async def test_initialize_devices_refresh_exception(hass) -> None:
 
     entry = MockConfigEntry(domain=DOMAIN, data={})
     entry.add_to_hass(hass)
-    hass.data.setdefault(DOMAIN, {})[entry.entry_id] = {"devices": {}}
+    _attach_runtime_data(entry)
 
     with patch("custom_components.aprilaire_8870.asyncio.sleep", new=AsyncMock()):
         await async_initialize_devices_background(hass, entry, coord, dm, [1])
@@ -181,7 +196,7 @@ async def test_initialize_devices_outer_exception(hass) -> None:
     dm.async_setup_device = AsyncMock()
     entry = MockConfigEntry(domain=DOMAIN, data={})
     entry.add_to_hass(hass)
-    hass.data.setdefault(DOMAIN, {})[entry.entry_id] = {"devices": {}}
+    _attach_runtime_data(entry)
 
     # Force an exception via a magic attribute access on data.
     with patch("custom_components.aprilaire_8870.asyncio.sleep",
@@ -301,7 +316,7 @@ async def test_setup_entry_full_happy_path(hass) -> None:
          patch("custom_components.aprilaire_8870.asyncio.sleep", new=AsyncMock()):
         ok = await async_setup_entry(hass, entry)
     assert ok is True
-    assert entry.entry_id in hass.data[DOMAIN]
+    assert isinstance(entry.runtime_data, AprilaireRuntimeData)
 
 
 async def test_setup_entry_connection_lost_after_read(hass) -> None:
