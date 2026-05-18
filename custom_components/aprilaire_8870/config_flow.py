@@ -67,11 +67,17 @@ def _parse_location_name(address: int, responses: list[str]) -> str | None:
     Aprilaire thermostats with a location name configured echo it back in the
     response prefix, e.g. ``SN1Master Bedroom ID=8870`` instead of just
     ``SN1 ID=8870``. This helper returns the trimmed name if present, or None.
+
+    Boundary char between the name and the response code can be ``=`` for
+    most commands (TEMP, MODE, HVAC, …) or ``#`` for ID responses
+    (``MODEL# 8870 REV: V1.2 - RPC 2002``). Single-letter codes (T=, M=, F=)
+    are also accepted since the firmware uppercases the response code
+    regardless of the request case.
     """
     if not responses:
         return None
     pattern = re.compile(
-        rf"^SN{address}\s*([A-Za-z0-9 ]*?)\s*[A-Z]{{2,}}="
+        rf"^SN{address}\s*([A-Za-z0-9 ]*?)\s*[A-Z][A-Z0-9]*[=#]"
     )
     for line in responses:
         if not isinstance(line, str):
@@ -268,34 +274,57 @@ class AprilaireConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             discovered_thermostats.sort()
             _LOGGER.debug("Discovered thermostats: %s", discovered_thermostats)
             
-            # Probe each thermostat with ID? to (a) confirm 8870 on the first one and
-            # (b) pick up any location name set on the device, so HA's Name & Assign
-            # step shows the user-configured names instead of "Aprilaire 1/2/3...".
+            # v0.4.0: bulk ID? via SN0 instead of N per-device loops.
+            # The 8870 protocol uses TDMA slot timing — every connected
+            # thermostat replies in its own address-ordered slot. Per the
+            # programmer's manual, max wait is 265ms × N where N is the
+            # device's "Number of Thermostats on Network" setting (default
+            # 32). We use 10s to be safe even on devices still at default.
             device_names: dict[str, str] = {}
-            for idx, address in enumerate(discovered_thermostats):
-                id_cmd = f"SN{address} ID?"
-                _LOGGER.debug("Sending ID query: %s", id_cmd)
-                await self.connection.async_send_command(id_cmd)
-                await asyncio.sleep(1)
-                id_responses = self.connection.get_received_messages()
-                _LOGGER.debug("ID responses for %s: %s", address, id_responses)
+            id_responses_per_address: dict[int, str] = {}
+            if discovered_thermostats:
+                try:
+                    bulk_responses = await self.connection.async_send_global_command(
+                        "ID?",
+                        expected_addresses=discovered_thermostats,
+                        timeout=10.0,
+                    )
+                    id_responses_per_address.update(bulk_responses)
+                    _LOGGER.debug(
+                        "Bulk ID? returned %d/%d responses",
+                        len(bulk_responses), len(discovered_thermostats),
+                    )
+                except Exception as bulk_ex:
+                    _LOGGER.debug("Bulk ID? failed, falling back to per-device: %s", bulk_ex)
 
-                if idx == 0:
-                    # First device gates the whole flow — must be an 8870.
-                    if not id_responses or not any(
-                        "8870" in r for r in id_responses
-                    ):
-                        _LOGGER.warning(
-                            "Not an Aprilaire 8870 model at address %s: %s",
-                            address,
-                            id_responses,
-                        )
-                        error = "not_aprilaire_8870"
-                        break
+                # Per-device fallback for any addresses the bulk missed.
+                missing = [a for a in discovered_thermostats if a not in id_responses_per_address]
+                for address in missing:
+                    await self.connection.async_send_command(f"SN{address} ID?")
+                    await asyncio.sleep(1)
+                    for line in self.connection.get_received_messages():
+                        m = re.match(rf"^SN{address}", line)
+                        if m:
+                            id_responses_per_address[address] = line
+                            break
 
-                name = _parse_location_name(address, id_responses)
-                if name:
-                    device_names[str(address)] = name
+                # First-device 8870 verification using whatever ID response
+                # we got for the lowest address.
+                first_addr = discovered_thermostats[0]
+                first_response = id_responses_per_address.get(first_addr)
+                if not first_response or "8870" not in first_response:
+                    _LOGGER.warning(
+                        "Not an Aprilaire 8870 model at address %s: %s",
+                        first_addr, first_response,
+                    )
+                    error = "not_aprilaire_8870"
+
+                # Extract location names from whatever we collected.
+                if not error:
+                    for address, response in id_responses_per_address.items():
+                        name = _parse_location_name(address, [response])
+                        if name:
+                            device_names[str(address)] = name
         except Exception as ex:
             _LOGGER.exception("Error during discovery: %s", ex)
             error = "discovery_error"

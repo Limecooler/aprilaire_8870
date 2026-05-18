@@ -101,6 +101,28 @@ def _patch_discovery(
     async def stub_send_with_response(self, command, timeout=3.0):
         return None
 
+    # v0.4.0: config_flow now bulk-probes ID? via SN0. Stub returns the
+    # model line per discovered address, embedding the configured name in
+    # the prefix when one is set. Matches the real 8870 ID response shape:
+    # ``SN<addr><name>  MODEL# 8870 REV: V1.2 - RPC 2002`` — note the `#`
+    # boundary (not `=`) on ID responses, and the two-space gap separating
+    # the optional name from the response code.
+    async def stub_send_global_command(self, command, expected_addresses, timeout=5.0):
+        if "ID" not in command:
+            return {}
+        # If the caller asked for a non-8870 model, omit the '#' so the
+        # not_aprilaire_8870 check trips correctly in test_serial_server_not_aprilaire.
+        if "8870" in model_response:
+            payload = f"MODEL# 8870 REV: V1.2 - RPC 2002"
+        else:
+            payload = model_response  # e.g. "MODEL OTHER"
+        result = {}
+        for addr in expected_addresses:
+            name = names.get(addr, "")
+            prefix = f"SN{addr}{name}" if name else f"SN{addr}"
+            result[addr] = f"{prefix}  {payload}"
+        return result
+
     def stub_get_received_messages(self):
         return received_seq.pop(0) if received_seq else []
 
@@ -114,6 +136,11 @@ def _patch_discovery(
             cf.SerialServerConnection,
             "async_send_command_with_response",
             new=stub_send_with_response,
+        ),
+        patch.object(
+            cf.SerialServerConnection,
+            "async_send_global_command",
+            new=stub_send_global_command,
         ),
         patch.object(
             cf.SerialServerConnection,
@@ -181,6 +208,23 @@ def test_parse_location_name_extracts_name() -> None:
     assert cf._parse_location_name(1, ["SN1Master Bedroom ID=8870"]) == "Master Bedroom"
     assert cf._parse_location_name(2, ["SN2 ID=8870"]) is None
     assert cf._parse_location_name(7, ["SN7Kitchen TEMP=72.5"]) == "Kitchen"
+
+
+def test_parse_location_name_handles_model_hash_format() -> None:
+    """Real-firmware ID responses use ``MODEL#`` (not ``=``) as the boundary."""
+    assert cf._parse_location_name(
+        3, ["SN3Master Bedroom  MODEL# 8870 REV: V1.2 - RPC 2002"]
+    ) == "Master Bedroom"
+    # No name set — empty result.
+    assert cf._parse_location_name(
+        1, ["SN1  MODEL# 8870 REV: V1.2 - RPC 2002"]
+    ) is None
+
+
+def test_parse_location_name_handles_single_letter_codes() -> None:
+    """Real-firmware short-form responses (T=, M=, F=) also have valid prefixes."""
+    assert cf._parse_location_name(11, ["SN11Basement Utility  T=76F"]) == "Basement Utility"
+    assert cf._parse_location_name(7, ["SN7Billy Bedroom  M=COOL"]) == "Billy Bedroom"
     # Wrong address — no match.
     assert cf._parse_location_name(99, ["SN1Master Bedroom ID=8870"]) is None
     # Empty input.
@@ -296,12 +340,18 @@ async def test_serial_port_success(hass) -> None:
         # See test_config_flow stub_send_with_response for rationale.
         return None
 
+    async def stub_send_global_command(self, command, expected_addresses, timeout=5.0):
+        if "ID" in command:
+            return {addr: f"SN{addr}  MODEL 8870" for addr in expected_addresses}
+        return {}
+
     def stub_recv(self):
         return received_seq.pop(0) if received_seq else []
 
     with patch.object(cf.ComPortConnection, "async_connect", new=stub_connect), \
          patch.object(cf.ComPortConnection, "async_disconnect", new=stub_disconnect), \
          patch.object(cf.ComPortConnection, "async_start_reading", new=stub_start), \
+         patch.object(cf.ComPortConnection, "async_send_global_command", new=stub_send_global_command), \
          patch.object(cf.ComPortConnection, "async_stop_reading", new=stub_stop), \
          patch.object(cf.ComPortConnection, "async_send_command", new=stub_send), \
          patch.object(cf.ComPortConnection, "async_send_command_with_response", new=stub_send_with_response), \
