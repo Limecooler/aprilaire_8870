@@ -83,9 +83,17 @@ class AprilaireSensor(CoordinatorEntity, SensorEntity):
         """Initialize the sensor."""
         super().__init__(coordinator)
         self._device_id = device_id
-        # Safely get device
+        # Safely get device. v0.4.6: coordinator.devices is keyed by int
+        # (the RS-485 address), but sensors pass device_id in as a str —
+        # so the .get() always missed and self._device was always None,
+        # silently dropping the location name and firmware version from
+        # the HA device registry. Cast to int for the lookup.
         if hasattr(coordinator, "devices") and coordinator.devices is not None:
-            self._device = coordinator.devices.get(device_id)
+            try:
+                lookup_id = int(device_id)
+            except (TypeError, ValueError):
+                lookup_id = device_id
+            self._device = coordinator.devices.get(lookup_id)
         else:
             self._device = None
             

@@ -163,8 +163,11 @@ def test_remote_sensor_no_data() -> None:
 
 
 def test_sensor_device_info_with_device() -> None:
+    # v0.4.6: coordinator.devices is keyed by int (the device address)
+    # to match production; sensor.py now casts the str device_id to int
+    # before looking up.
     dev = make_device(address=1)
-    coord = make_coordinator(data={"1": {"available": True}}, devices={"1": dev})
+    coord = make_coordinator(data={"1": {"available": True}}, devices={1: dev})
     s = sensor_mod.AprilaireTemperatureSensor(coord, "1")
     info = s.device_info
     assert info["name"] == "Aprilaire 1"
@@ -399,6 +402,23 @@ def test_binary_sensor_system_error_no_data() -> None:
     assert s.extra_state_attributes == {}
 
 
+def test_binary_sensor_system_error_status_is_none_not_a_false_positive() -> None:
+    """v0.4.6 regression: error_status defaults to None in device.py:136
+    and stays None until the optional ERROR poll runs (or never, when
+    monitor_alarms=False). dict.get(key, default) returns default ONLY
+    when the key is missing, NOT when it exists with value None — so
+    the sensor previously evaluated ``None != "000000"`` → True and
+    permanently reported "problem" on every thermostat.
+    """
+    coord = make_coordinator(data=_bs_data(error_status=None))
+    s = bs.AprilaireSystemErrorStatusSensor(coord, make_device(1))
+    assert s.is_on is False
+    # extra_state_attributes also handles None defensively.
+    attrs = s.extra_state_attributes
+    assert attrs["temperature_sensor"] == "0"
+    assert attrs["eeprom"] == "0"
+
+
 def test_binary_sensor_system_error_short_string_no_indexerror() -> None:
     """Defensive: short/empty error_status must not IndexError on subscripts."""
     coord = make_coordinator(data=_bs_data(error_status=""))
@@ -465,7 +485,10 @@ def test_binary_sensor_extra_state_attributes_cache() -> None:
 def test_binary_sensor_setup_entry(hass) -> None:
     coord = make_coordinator(data={})
     dev = make_device(1)
-    dev.is_heat_pump = True  # add emergency-heat entity
+    # v0.4.6: is_heat_pump is read from device.capabilities, not as a
+    # direct attribute — that was a latent AttributeError waiting to fire
+    # the moment runtime_data.devices was populated before platform setup.
+    dev.capabilities = {"is_heat_pump": True}
     entry = MagicMock()
     entry.entry_id = "abc"
     entry.runtime_data = _make_runtime(
@@ -624,28 +647,9 @@ async def test_switch_network_override_device_without_set_hold() -> None:
     await s.async_turn_off()
 
 
-def test_switch_backlight_is_on() -> None:
-    coord = make_coordinator(data={"1": {"constant_backlight": "ON", "available": True}})
-    s = sw.AprilaireBacklightSwitch(coord, make_device(1))
-    assert s.is_on is True
-
-
-async def test_switch_backlight_turn_on_and_off() -> None:
-    dev = make_device(1)
-    coord = make_coordinator(data={"1": {"available": True}})
-    s = sw.AprilaireBacklightSwitch(coord, dev)
-    await s.async_turn_on()
-    dev.async_set_constant_backlight.assert_called_with(True)
-    await s.async_turn_off()
-    dev.async_set_constant_backlight.assert_called_with(False)
-
-
-async def test_switch_backlight_device_without_method() -> None:
-    dev = SimpleNamespace(address=1, name="x", unique_id="x")
-    coord = make_coordinator(data={"1": {"available": True}})
-    s = sw.AprilaireBacklightSwitch(coord, dev)
-    await s.async_turn_on()
-    await s.async_turn_off()
+# v0.4.6: AprilaireBacklightSwitch was removed (the 8870 firmware only
+# supports the BLTON one-shot pulse, not a "constant" backlight state)
+# — corresponding switch entity tests deleted.
 
 
 async def test_switch_subclass_not_implemented() -> None:
@@ -673,8 +677,10 @@ def test_switch_setup_entry_with_devices(hass) -> None:
     asyncio.get_event_loop().run_until_complete(
         sw.async_setup_entry(hass, entry, fake_add)
     )
-    # Device 1: 3 entities, Device 2 placeholder: 3 entities = 6.
-    assert len(added) == 6
+    # Device 1: 2 entities (fan override + network override),
+    # Device 2 placeholder: 2 entities = 4 total.
+    # v0.4.6: AprilaireBacklightSwitch removed (BLTON is one-shot only).
+    assert len(added) == 4
 
 
 def test_switch_setup_entry_device_creation_error(hass, monkeypatch) -> None:
@@ -708,7 +714,7 @@ def test_switch_setup_entry_device_creation_error(hass, monkeypatch) -> None:
 def test_switch_setup_entry_with_network_override_disabled(hass) -> None:
     coord = make_coordinator(data={"1": {}})
     dev = make_device(1)
-    dev.network_override_enabled = False  # exercises the conditional branch
+    dev.network_override_enabled = False  # was previously a conditional branch
     entry = MagicMock()
     entry.entry_id = "abc"
     entry.runtime_data = _make_runtime(
@@ -723,5 +729,5 @@ def test_switch_setup_entry_with_network_override_disabled(hass) -> None:
     asyncio.get_event_loop().run_until_complete(
         sw.async_setup_entry(hass, entry, fake_add)
     )
-    # Even with network_override_enabled=False, the integration always adds the switch.
-    assert len(added) == 3
+    # v0.4.6: setup always adds fan + network override (2 entities total).
+    assert len(added) == 2

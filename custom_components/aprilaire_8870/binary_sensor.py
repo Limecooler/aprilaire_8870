@@ -70,8 +70,13 @@ async def async_setup_entry(
             entities.append(AprilaireCoolingStatusSensor(coordinator, device))
             entities.append(AprilaireFanStatusSensor(coordinator, device))
             
-            # Emergency heat - only for heat pumps
-            if device.is_heat_pump:
+            # Emergency heat - only for heat pumps. v0.4.6: is_heat_pump
+            # lives in device.capabilities, never as a direct attribute on
+            # AprilaireDevice — the previous ``device.is_heat_pump`` access
+            # would AttributeError if this code path were reachable at
+            # platform-setup time (it isn't today because runtime_data.devices
+            # is empty until the background init task populates it).
+            if getattr(device, "capabilities", {}).get("is_heat_pump"):
                 entities.append(AprilaireEmergencyHeatStatusSensor(coordinator, device))
             
             # Filter status
@@ -318,9 +323,15 @@ class AprilaireSystemErrorStatusSensor(AprilaireBinarySensor):
         if not self.coordinator.data.get(self._device_id):
             return False
 
-        # v0.4.2 fix: was reading "error"; coordinator stores it as
-        # "error_status" (device.py:297). Always reported no-error before.
-        error_status = self.coordinator.data[self._device_id].get("error_status", "000000")
+        # v0.4.6: ``.get(key, default)`` returns the default only when
+        # the key is MISSING; if the key exists with value ``None``
+        # (the initial state in device.py:136 before ERROR has ever
+        # been polled) ``.get`` returns None, and ``None != "000000"``
+        # evaluates True — so the sensor reported a false-positive
+        # error on every device until the first ERROR query landed.
+        # With monitor_alarms=False (the default), ERROR is never
+        # polled, so the sensor was permanently stuck "on".
+        error_status = self.coordinator.data[self._device_id].get("error_status") or "000000"
         return error_status != "000000"
 
     @property
@@ -329,10 +340,10 @@ class AprilaireSystemErrorStatusSensor(AprilaireBinarySensor):
         if not self.coordinator.data.get(self._device_id):
             return {}
 
-        error_status = self.coordinator.data[self._device_id].get("error_status", "000000")
+        error_status = self.coordinator.data[self._device_id].get("error_status") or "000000"
         # Pad/truncate defensively — firmware nominally returns 6 chars
         # (one digit per subsystem) but absent/empty values would IndexError.
-        error_status = (error_status or "000000").ljust(6, "0")[:6]
+        error_status = error_status.ljust(6, "0")[:6]
 
         # Decode error status into component errors
         error_types = {

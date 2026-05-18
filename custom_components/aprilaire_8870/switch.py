@@ -37,44 +37,34 @@ async def async_setup_entry(
     all_device_ids = set(devices.keys()) | set(discovered_addresses)
     
     for device_id in all_device_ids:
-        # If device is already initialized, use the device object
+        # If device is already initialized, use the device object.
         if device_id in devices:
             device = devices[device_id]
-            
-            # Fan override switch
             entities.append(AprilaireFanOverrideSwitch(coordinator, device))
-            
-            # Network override switch (HOLD functionality)
-            # Only add if NETLK = 0 (network override enabled)
-            if hasattr(device, "network_override_enabled") and device.network_override_enabled:
-                entities.append(AprilaireNetworkOverrideSwitch(coordinator, device))
-            else:
-                # Add anyway, since we don't know yet if it's supported
-                entities.append(AprilaireNetworkOverrideSwitch(coordinator, device))
-            
-            # Constant backlight switch
-            entities.append(AprilaireBacklightSwitch(coordinator, device))
+            entities.append(AprilaireNetworkOverrideSwitch(coordinator, device))
         else:
-            # Device not fully initialized yet, use minimal placeholder
+            # Device not fully initialized yet, use minimal placeholder.
             from .device import AprilaireDevice
-            
+
             try:
-                # Create minimal device
                 minimal_device = AprilaireDevice(
                     address=device_id,
                     coordinator=coordinator,
-                    protocol=None  # Will be set later during initialization
+                    protocol=None,  # Will be set later during initialization
                 )
                 minimal_device.name = f"Aprilaire {device_id}"
                 minimal_device.unique_id = f"{DOMAIN}_{device_id}"
-                minimal_device.network_override_enabled = True  # Assume enabled until we know otherwise
-                
-                # Create entities with minimal device
                 entities.append(AprilaireFanOverrideSwitch(coordinator, minimal_device))
                 entities.append(AprilaireNetworkOverrideSwitch(coordinator, minimal_device))
-                entities.append(AprilaireBacklightSwitch(coordinator, minimal_device))
             except Exception as ex:
                 _LOGGER.error("Error creating minimal device for switch entities: %s", ex)
+
+    # v0.4.6: removed AprilaireBacklightSwitch. The 8870 firmware exposes
+    # only the ``BLTON`` one-shot 10-second backlight pulse (per the
+    # programmer's manual DP 10005756); there is no "constant backlight"
+    # toggle, so a SwitchEntity is the wrong shape. The corresponding
+    # `aprilaire_8870.set_backlight` service still works for the one-shot
+    # pulse.
 
     async_add_entities(entities)
 
@@ -263,34 +253,6 @@ class AprilaireNetworkOverrideSwitch(AprilaireSwitch):
             await self._device.async_set_hold(False)
         # Coordinator will be updated when the COS message is received or during polling
 
-class AprilaireBacklightSwitch(AprilaireSwitch):
-    """Switch to control thermostat constant backlight."""
-
-    def __init__(self, coordinator, device) -> None:
-        """Initialize the backlight switch."""
-        super().__init__(
-            coordinator=coordinator,
-            device=device,
-            name_suffix="Constant Backlight",
-            unique_id_suffix="constant_backlight",
-            entity_category=EntityCategory.CONFIG,
-            icon="mdi:lightbulb",
-        )
-
-    @property
-    def is_on(self) -> bool:
-        """Return true if constant backlight is enabled."""
-        device_data = self.coordinator.data.get(self._device_id, {})
-        return device_data.get("constant_backlight", "OFF") == "ON"
-
-    async def _async_turn_on_impl(self, **kwargs: Any) -> None:
-        """Turn on constant backlight."""
-        if hasattr(self._device, "async_set_constant_backlight"):
-            await self._device.async_set_constant_backlight(True)
-        # Coordinator will be updated during the next polling cycle
-    
-    async def _async_turn_off_impl(self, **kwargs: Any) -> None:
-        """Turn off constant backlight."""
-        if hasattr(self._device, "async_set_constant_backlight"):
-            await self._device.async_set_constant_backlight(False)
-        # Coordinator will be updated during the next polling cycle
+# v0.4.6: AprilaireBacklightSwitch removed — the 8870 firmware only
+# supports BLTON (one-shot 10s pulse), not a constant on/off state.
+# Use the ``aprilaire_8870.set_backlight`` service for the pulse.

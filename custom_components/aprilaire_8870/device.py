@@ -1322,17 +1322,24 @@ class AprilaireDevice:
 
     def _parse_controller_type(self, controller_type: str) -> None:
         """Parse controller type from CT command response.
-        
-        Args:
-            controller_type: The response from the CT command
+
+        Stores the value as a string to match ``CONTROLLER_TYPE_TEMP``
+        (``"0"``) and ``CONTROLLER_TYPE_HUMID`` (``"1"``) — the
+        constants every consumer compares against. v0.4.6 fix: the
+        previous int(value) conversion meant the equality check in
+        ``async_set_temperature`` (``controller_type != "0"``) failed
+        for EVERY temperature controller after init, blocking all
+        setpoint changes from the climate entity with a spurious
+        "Cannot set temperature on humidity controller" error.
         """
         try:
             # Extract the value part (after "CT=")
             if "CT=" in controller_type:
                 value = controller_type.split("CT=")[1].strip()
-                # Now convert just the extracted value to int
-                ct = int(value)
-                self.capabilities["controller_type"] = ct
+                # Validate it parses as an int but keep the string form,
+                # so future digit-only CT codes don't change behavior.
+                int(value)
+                self.capabilities["controller_type"] = value
         except Exception as err:
             _LOGGER.error("Error parsing controller type for thermostat %s: %s", self.address, err)
 

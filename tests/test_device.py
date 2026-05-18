@@ -547,7 +547,19 @@ def test_parse_equipment_config_garbage() -> None:
 def test_parse_controller_type_humidity() -> None:
     dev, _, _ = make_device()
     dev._parse_controller_type("SN1 CT=1")
-    assert dev.capabilities["controller_type"] == 1
+    # v0.4.6: stored as string (matches CONTROLLER_TYPE_HUMID constant).
+    assert dev.capabilities["controller_type"] == "1"
+
+
+def test_parse_controller_type_temp() -> None:
+    """v0.4.6 regression: temp controller stays a string so equality
+    against CONTROLLER_TYPE_TEMP (``"0"``) holds and set_temperature
+    isn't bounced as a humidity controller."""
+    dev, _, _ = make_device()
+    dev._parse_controller_type("SN1 CT=0")
+    assert dev.capabilities["controller_type"] == "0"
+    from custom_components.aprilaire_8870.const import CONTROLLER_TYPE_TEMP
+    assert dev.capabilities["controller_type"] == CONTROLLER_TYPE_TEMP
 
 
 def test_parse_controller_type_missing() -> None:
@@ -785,6 +797,25 @@ async def test_set_temperature_humidity_controller() -> None:
     dev.available = True
     dev.capabilities["controller_type"] = "1"
     assert await dev.async_set_temperature(72) is False
+
+
+async def test_set_temperature_after_parse_ct_works() -> None:
+    """v0.4.6 regression: after init queries CT? and parses CT=0,
+    set_temperature must NOT bounce as "humidity controller".
+
+    Pre-v0.4.6 the parser stored int(0) while CONTROLLER_TYPE_TEMP was
+    the string "0", so the equality check failed and EVERY thermostat
+    rejected EVERY setpoint change from the climate entity once init
+    completed. Reported as "I was also not able to set the desired
+    temperature in Billy Bedroom around the time of the humidity issue."
+    """
+    dev, conn, _ = make_device()
+    dev.available = True
+    # Simulate the init flow: parse CT response, then attempt setpoint.
+    dev._parse_controller_type("SN1 CT=0")
+    dev._state["mode"] = "HEAT"
+    conn.responses["SN1 SH=72"] = "SN1 SH=72F"
+    assert await dev.async_set_temperature(72) is True
 
 
 async def test_set_temperature_no_mode_no_arg() -> None:
