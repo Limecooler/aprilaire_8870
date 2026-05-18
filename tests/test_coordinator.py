@@ -638,6 +638,76 @@ async def test_handle_bus_message_ignores_garbage(hass) -> None:
     dev._process_state_response.assert_not_called()
 
 
+async def test_async_sync_time_sends_TIME_and_DATE_globals(hass) -> None:
+    """v0.4.0: time sync issues SN0 TIME=HHMM + SN0 DATE=MMDDYY."""
+    import datetime
+    from unittest.mock import patch as _patch
+    coord = make_coord(hass, devices={1: MagicMock(), 2: MagicMock()})
+    coord.connection.is_connected = MagicMock(return_value=True)
+    coord.connection.async_send_global_command = AsyncMock(return_value={})
+    fixed_now = datetime.datetime(2026, 3, 7, 14, 5)  # March 7 2026, 2:05pm
+    with _patch(
+        "custom_components.aprilaire_8870.coordinator.dt_util.now",
+        return_value=fixed_now,
+    ):
+        ok = await coord.async_sync_time_to_thermostats()
+    assert ok is True
+    calls = coord.connection.async_send_global_command.call_args_list
+    sent_commands = [c.args[0] for c in calls]
+    assert "TIME=1405" in sent_commands
+    assert "DATE=030726" in sent_commands
+
+
+async def test_async_sync_time_pads_single_digit_values(hass) -> None:
+    """Leading zeros required for hour/minute/month/day/year."""
+    import datetime
+    from unittest.mock import patch as _patch
+    coord = make_coord(hass, devices={1: MagicMock()})
+    coord.connection.is_connected = MagicMock(return_value=True)
+    coord.connection.async_send_global_command = AsyncMock(return_value={})
+    fixed_now = datetime.datetime(2009, 1, 5, 6, 3)  # Jan 5 2009, 6:03am
+    with _patch(
+        "custom_components.aprilaire_8870.coordinator.dt_util.now",
+        return_value=fixed_now,
+    ):
+        await coord.async_sync_time_to_thermostats()
+    calls = [c.args[0] for c in coord.connection.async_send_global_command.call_args_list]
+    assert "TIME=0603" in calls
+    assert "DATE=010509" in calls
+
+
+async def test_async_sync_time_skips_when_disconnected(hass) -> None:
+    coord = make_coord(hass, devices={1: MagicMock()})
+    coord.connection.is_connected = MagicMock(return_value=False)
+    coord.connection.async_send_global_command = AsyncMock()
+    ok = await coord.async_sync_time_to_thermostats()
+    assert ok is False
+    coord.connection.async_send_global_command.assert_not_called()
+
+
+async def test_async_sync_time_swallows_exceptions(hass) -> None:
+    coord = make_coord(hass, devices={1: MagicMock()})
+    coord.connection.is_connected = MagicMock(return_value=True)
+    coord.connection.async_send_global_command = AsyncMock(side_effect=RuntimeError("bus"))
+    # Should not raise.
+    ok = await coord.async_sync_time_to_thermostats()
+    assert ok is False
+
+
+async def test_start_time_sync_scheduler_idempotent(hass) -> None:
+    coord = make_coord(hass)
+    with patch(
+        "custom_components.aprilaire_8870.coordinator.async_track_time_interval"
+    ) as mock_track:
+        mock_track.return_value = MagicMock()
+        coord.async_start_time_sync_scheduler()
+        # Second call no-ops.
+        coord.async_start_time_sync_scheduler()
+    # Called exactly once.
+    assert mock_track.call_count == 1
+    assert coord._time_sync_unsub is not None
+
+
 async def test_bulk_poll_essentials_routes_responses_per_device(hass) -> None:
     """v0.4.0: SN0 globals dispatch responses into per-device state."""
     dev1 = MagicMock()

@@ -127,6 +127,11 @@ class AprilaireDataUpdateCoordinator(DataUpdateCoordinator):
         # Independent timer for COS verification — moved out of the poll
         # hot path so a long verification can't extend a poll cycle.
         self._cos_verification_unsub: Optional[Callable[[], None]] = None
+        # v0.4.0: daily time/date sync. The 8870 has an internal RTC accurate
+        # to ~1 min over 24h that doesn't auto-increment past midnight —
+        # the programmer's manual explicitly requires the host to push
+        # TIME and DATE at least once per day.
+        self._time_sync_unsub: Optional[Callable[[], None]] = None
         self._cached_state = None
         self._state_loaded = False
 
@@ -184,6 +189,76 @@ class AprilaireDataUpdateCoordinator(DataUpdateCoordinator):
                 _LOGGER.debug("No stored state found")
         except Exception as ex:
             _LOGGER.error("Error loading stored state: %s", ex)
+
+    async def async_sync_time_to_thermostats(self) -> bool:
+        """Push HA's current time and date to every thermostat via SN0.
+
+        Per the programmer's manual the 8870 has an internal RTC that
+        requires the host to push TIME and DATE at least once per day —
+        no auto-increment across midnight. Format is `TIME=HHMM` (24-hour
+        military, leading zeros required) and `DATE=MMDDYY` (leading
+        zeros required for single-digit month/day).
+
+        Uses SN0 global broadcast so one TIME and one DATE write update
+        every connected thermostat in two wire commands instead of 2N.
+
+        Fire-and-forget: writes don't reliably echo per-device responses
+        on globals, and the values are non-critical — if a sync misses,
+        the next one (tomorrow at most) catches up.
+        """
+        if not self.connection or not getattr(self.connection, "is_connected", lambda: False)():
+            _LOGGER.debug("Time sync skipped: not connected")
+            return False
+        now = dt_util.now()
+        time_value = f"{now.hour:02d}{now.minute:02d}"
+        date_value = f"{now.month:02d}{now.day:02d}{now.year % 100:02d}"
+        addresses = sorted(self.devices.keys()) if self.devices else []
+        try:
+            await self.connection.async_send_global_command(
+                f"TIME={time_value}",
+                expected_addresses=addresses,
+                timeout=2.0,
+            )
+            await self.connection.async_send_global_command(
+                f"DATE={date_value}",
+                expected_addresses=addresses,
+                timeout=2.0,
+            )
+            _LOGGER.info(
+                "Pushed TIME=%s DATE=%s to %d thermostats via SN0 globals",
+                time_value, date_value, len(addresses),
+            )
+            return True
+        except Exception as ex:  # pragma: no cover (defensive)
+            _LOGGER.warning("Time/date sync failed: %s", ex)
+            return False
+
+    def async_start_time_sync_scheduler(self) -> None:
+        """Schedule daily TIME/DATE pushes to all thermostats.
+
+        Runs once 5s after startup (so the bus has settled), then every
+        24 hours. Idempotent — calling twice is a no-op.
+        """
+        if self._time_sync_unsub is not None:
+            return
+
+        async def _tick(_now):
+            try:
+                await self.async_sync_time_to_thermostats()
+            except Exception as ex:  # pragma: no cover (defensive)
+                _LOGGER.error("Time sync tick raised: %s", ex)
+
+        async def _initial_sync(_now):
+            await _tick(_now)
+
+        # First sync after a 5s settle.
+        self.hass.async_create_background_task(
+            _initial_sync(None), name=f"{DOMAIN}_initial_time_sync",
+        )
+        # Recurring daily.
+        self._time_sync_unsub = async_track_time_interval(
+            self.hass, _tick, timedelta(hours=24),
+        )
 
     def async_start_cos_verification_scheduler(self) -> None:
         """Start the periodic COS-verification timer (idempotent).
@@ -743,6 +818,9 @@ class AprilaireDataUpdateCoordinator(DataUpdateCoordinator):
         if hasattr(self, "_cos_verification_unsub") and self._cos_verification_unsub:
             self._cos_verification_unsub()
             self._cos_verification_unsub = None
+        if hasattr(self, "_time_sync_unsub") and self._time_sync_unsub:
+            self._time_sync_unsub()
+            self._time_sync_unsub = None
             
         # Save final state
         await self._async_save_state()

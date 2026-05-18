@@ -167,6 +167,13 @@ async def async_initialize_devices_background(
         # v0.3.0: COS verification now runs on its own timer rather than
         # inline during _async_update_data. Start it once we have devices.
         coordinator.async_start_cos_verification_scheduler()
+
+        # v0.4.0: daily TIME/DATE sync via SN0 globals. The 8870 RTC
+        # doesn't auto-increment past midnight and the programmer's manual
+        # explicitly requires the host to push both values at least once
+        # per day. First sync fires 5s after init completes; thereafter
+        # every 24 hours.
+        coordinator.async_start_time_sync_scheduler()
     
         # Update the coordinator with all discovered devices
         _LOGGER.debug("Background initialization completed for %d of %d thermostats",
