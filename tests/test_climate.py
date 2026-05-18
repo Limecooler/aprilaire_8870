@@ -275,28 +275,25 @@ async def test_set_temperature_auto_idle_action() -> None:
     c.coordinator.async_set_heat_setpoint.assert_called_with("1", 72)
 
 
-async def test_set_temperature_skips_refresh_on_failure() -> None:
-    """v0.4.7 regression: failed set_temperature must NOT trigger a
-    full coordinator refresh. The pre-v0.4.7 behavior was an
-    unconditional ``async_request_refresh()`` after every set, so a
-    user clicking the climate slider while one device had a stale
-    cached controller_type kicked off a 30s+ full bus poll every
-    time — drowning out subsequent commands.
+async def test_set_temperature_never_triggers_full_refresh() -> None:
+    """v0.4.8: climate must NEVER call async_request_refresh after a
+    setpoint change. The coordinator's set_*_setpoint publishes a
+    targeted single-device state update on success; a full refresh
+    polls all 11 devices for ~30 seconds of bus time to learn the
+    value we just set ourselves. Reported by user: "When I change the
+    temperature on Billy bedroom, it immediately re-polls every device
+    for all details. Is this the proper implementation?"
     """
-    c = make_climate(data={"1": {"mode": "HEAT", "available": True}})
-    c.coordinator.async_set_heat_setpoint = AsyncMock(return_value=False)
-    await c.async_set_temperature(**{ATTR_TEMPERATURE: 72})
-    c.coordinator.async_request_refresh.assert_not_called()
-
-
-async def test_set_temperature_refreshes_on_success() -> None:
-    """Mirror of the above: a successful set still requests a refresh
-    so the UI picks up the new value promptly.
-    """
+    # Both success and failure must NOT trigger a refresh.
     c = make_climate(data={"1": {"mode": "HEAT", "available": True}})
     c.coordinator.async_set_heat_setpoint = AsyncMock(return_value=True)
     await c.async_set_temperature(**{ATTR_TEMPERATURE: 72})
-    c.coordinator.async_request_refresh.assert_called_once()
+    c.coordinator.async_request_refresh.assert_not_called()
+
+    c2 = make_climate(data={"1": {"mode": "HEAT", "available": True}})
+    c2.coordinator.async_set_heat_setpoint = AsyncMock(return_value=False)
+    await c2.async_set_temperature(**{ATTR_TEMPERATURE: 72})
+    c2.coordinator.async_request_refresh.assert_not_called()
 
 
 async def test_set_hvac_mode_known() -> None:

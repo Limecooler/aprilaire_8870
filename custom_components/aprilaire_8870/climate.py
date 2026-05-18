@@ -404,8 +404,10 @@ class AprilaireClimate(CoordinatorEntity, ClimateEntity):
         else:
             ok = False
 
-        if ok:
-            await self.coordinator.async_request_refresh()
+        # v0.4.8: coordinator.async_set_*_setpoint now does a targeted
+        # single-device state publish on success — no full bulk poll
+        # needed. Setting a setpoint on Billy Bedroom previously kicked
+        # off a ~30s 9-command poll of all 11 devices for no good reason.
 
     async def async_set_hvac_mode(self, hvac_mode: HVACMode) -> None:
         """Set new target hvac mode."""
@@ -413,7 +415,7 @@ class AprilaireClimate(CoordinatorEntity, ClimateEntity):
         if aprilaire_mode is None:
             _LOGGER.error("Unsupported HVAC mode: %s", hvac_mode)
             return
-        
+
         # For cached-only state, mark operation as pending but don't actually execute
         device_data = self.coordinator.data.get(self._device_id, {})
         if device_data.get("from_cache", False) and not device_data.get("available", False):
@@ -422,11 +424,9 @@ class AprilaireClimate(CoordinatorEntity, ClimateEntity):
                 "command will be applied when device becomes available"
             )
             return
-            
+
+        # Coordinator publishes a targeted single-device update on success.
         await self.coordinator.async_set_hvac_mode(self._device_id, hvac_mode)
-        
-        # Request data update
-        await self.coordinator.async_request_refresh()
 
     async def async_set_fan_mode(self, fan_mode: str) -> None:
         """Set new target fan mode."""
@@ -434,7 +434,7 @@ class AprilaireClimate(CoordinatorEntity, ClimateEntity):
         if aprilaire_fan_mode is None:
             _LOGGER.error("Unsupported fan mode: %s", fan_mode)
             return
-        
+
         # For cached-only state, mark operation as pending but don't actually execute
         device_data = self.coordinator.data.get(self._device_id, {})
         if device_data.get("from_cache", False) and not device_data.get("available", False):
@@ -443,11 +443,9 @@ class AprilaireClimate(CoordinatorEntity, ClimateEntity):
                 "command will be applied when device becomes available"
             )
             return
-            
+
+        # Coordinator publishes a targeted single-device update on success.
         await self.coordinator.async_set_fan_mode(self._device_id, fan_mode)
-        
-        # Request data update
-        await self.coordinator.async_request_refresh()
 
     async def async_turn_on(self) -> None:
         """Turn the entity on."""

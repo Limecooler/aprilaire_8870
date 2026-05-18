@@ -740,6 +740,34 @@ class AprilaireDataUpdateCoordinator(DataUpdateCoordinator):
 
         return responded
 
+    def _publish_single_device_state(self, device) -> None:
+        """Push a single device's current state into ``data`` and notify.
+
+        v0.4.8: replacement for the post-set ``async_request_refresh()``
+        call. ``device.async_set_temperature`` (and the other writers)
+        update ``device._state`` immediately on success, so we already
+        know the new value — we just need HA to see it. Pulling
+        ``device.get_state()`` into ``self.data[device_id]`` and calling
+        ``async_update_listeners()`` updates the UI for THIS device only,
+        instead of triggering a full 9-command bulk poll of all 11
+        devices for the next ~30 seconds.
+        """
+        try:
+            state = device.get_state()
+        except Exception as ex:  # pragma: no cover (defensive)
+            _LOGGER.debug("Couldn't fetch state for targeted update: %s", ex)
+            return
+        if not state:
+            return
+        device_id_str = str(device.address)
+        if self._device_data is None:
+            self._device_data = {}
+        if self.data is None:
+            self.data = {}
+        self._device_data[device_id_str] = state
+        self.data[device_id_str] = state.copy()
+        self.async_update_listeners()
+
     async def async_set_heat_setpoint(self, device_id: str, temperature: float) -> bool:
         """Set the heat setpoint for a device. Returns success."""
         if self.devices is None:
@@ -752,6 +780,8 @@ class AprilaireDataUpdateCoordinator(DataUpdateCoordinator):
             return False
         ok = await device.async_set_temperature(temperature, "HEAT")
         if ok:
+            # Targeted UI update; avoids ~30s of bulk-poll bus traffic.
+            self._publish_single_device_state(device)
             await self._async_save_state()
         return bool(ok)
 
@@ -767,36 +797,42 @@ class AprilaireDataUpdateCoordinator(DataUpdateCoordinator):
             return False
         ok = await device.async_set_temperature(temperature, "COOL")
         if ok:
+            self._publish_single_device_state(device)
             await self._async_save_state()
         return bool(ok)
 
-    async def async_set_hvac_mode(self, device_id: str, mode: str) -> None:
-        """Set the HVAC mode for a device."""
+    async def async_set_hvac_mode(self, device_id: str, mode: str) -> bool:
+        """Set the HVAC mode for a device. Returns success."""
         if self.devices is None:
             _LOGGER.error("Device dictionary not initialized")
-            return
-            
-        device = self.devices.get(int(device_id))
-        if device:
-            await device.async_set_hvac_mode(mode)
-            # Save state after setting mode
-            await self._async_save_state()
-        else:
-            _LOGGER.error("Device not found: %s", device_id)
+            return False
 
-    async def async_set_fan_mode(self, device_id: str, mode: str) -> None:
-        """Set the fan mode for a device."""
+        device = self.devices.get(int(device_id))
+        if not device:
+            _LOGGER.error("Device not found: %s", device_id)
+            return False
+        ok = await device.async_set_hvac_mode(mode)
+        if ok:
+            # Targeted UI update — see _publish_single_device_state.
+            self._publish_single_device_state(device)
+            await self._async_save_state()
+        return bool(ok)
+
+    async def async_set_fan_mode(self, device_id: str, mode: str) -> bool:
+        """Set the fan mode for a device. Returns success."""
         if self.devices is None:
             _LOGGER.error("Device dictionary not initialized")
-            return
-            
+            return False
+
         device = self.devices.get(int(device_id))
-        if device:
-            await device.async_set_fan_mode(mode)
-            # Save state after setting fan mode
-            await self._async_save_state()
-        else:
+        if not device:
             _LOGGER.error("Device not found: %s", device_id)
+            return False
+        ok = await device.async_set_fan_mode(mode)
+        if ok:
+            self._publish_single_device_state(device)
+            await self._async_save_state()
+        return bool(ok)
 
     @callback
     def _handle_bus_message(self, config: Any, line: str) -> None:

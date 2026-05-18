@@ -841,6 +841,47 @@ async def test_bulk_poll_essentials_skips_hum_ot_when_all_devices_unsupported(ha
     assert "OT?" not in sent_commands
 
 
+async def test_set_heat_setpoint_targeted_update_no_full_poll(hass) -> None:
+    """v0.4.8: a successful setpoint change publishes a targeted single-
+    device state update instead of triggering a full bulk poll. UI
+    sees the new value immediately; the bus is undisturbed.
+    """
+    dev = make_dev(1)
+    dev.async_set_temperature = AsyncMock(return_value=True)
+    dev.get_state = MagicMock(return_value={"heat_setpoint": 72.0, "available": True})
+    coord = make_coord(hass, devices={1: dev})
+    coord._store = MagicMock()
+    coord._store.async_save = AsyncMock()
+    coord.async_update_listeners = MagicMock()
+    # Make sure we'd catch a stray full poll.
+    coord._async_update_data = AsyncMock(side_effect=AssertionError("must not full-poll"))
+
+    ok = await coord.async_set_heat_setpoint("1", 72.0)
+    assert ok is True
+    # Targeted publish landed on data and notified.
+    assert coord.data["1"]["heat_setpoint"] == 72.0
+    coord.async_update_listeners.assert_called_once()
+
+
+async def test_set_heat_setpoint_failure_skips_publish(hass) -> None:
+    """Failed sets must not touch coordinator.data or notify listeners —
+    otherwise the UI would briefly show a value the thermostat doesn't
+    actually have."""
+    dev = make_dev(1)
+    dev.async_set_temperature = AsyncMock(return_value=False)
+    dev.get_state = MagicMock(return_value={"heat_setpoint": 999.0})
+    coord = make_coord(hass, devices={1: dev})
+    coord._device_data = {"1": {"heat_setpoint": 70.0, "available": True}}
+    coord.data = {"1": {"heat_setpoint": 70.0, "available": True}}
+    coord.async_update_listeners = MagicMock()
+
+    ok = await coord.async_set_heat_setpoint("1", 72.0)
+    assert ok is False
+    # No state mutation, no listener notification.
+    assert coord.data["1"]["heat_setpoint"] == 70.0
+    coord.async_update_listeners.assert_not_called()
+
+
 async def test_bulk_poll_essentials_queries_hum_ot_if_any_device_supports(hass) -> None:
     """If even one device still has the sensor supported (or unknown),
     we keep querying — the bulk SN0 cost is fixed regardless of how
