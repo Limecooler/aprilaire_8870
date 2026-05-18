@@ -758,6 +758,70 @@ async def test_try_resolve_pending_no_match_when_no_pending(hass) -> None:
     conn._try_resolve_pending("")
 
 
+async def test_global_command_collects_per_address_responses(hass) -> None:
+    """SN0 CMD?: pre-register futures for N addresses, collect what arrives."""
+    conn = _make_serial_conn(hass)
+    conn._state = STATE_CONNECTED
+    conn._writer = _FakeWriter()
+
+    async def deliver() -> None:
+        await asyncio.sleep(0.02)
+        # Simulate three thermostats answering the global query.
+        conn._try_resolve_pending("SN1Master Bedroom  T=72F")
+        conn._try_resolve_pending("SN2Kitchen  T=70F")
+        conn._try_resolve_pending("SN3  T=68F")
+
+    asyncio.create_task(deliver())
+    result = await conn.async_send_global_command(
+        "TEMP?", expected_addresses=[1, 2, 3], timeout=1.0,
+    )
+    assert result == {
+        1: "SN1Master Bedroom  T=72F",
+        2: "SN2Kitchen  T=70F",
+        3: "SN3  T=68F",
+    }
+
+
+async def test_global_command_returns_partial_on_timeout(hass) -> None:
+    """Missing devices are silently omitted from the result dict."""
+    conn = _make_serial_conn(hass)
+    conn._state = STATE_CONNECTED
+    conn._writer = _FakeWriter()
+
+    async def deliver() -> None:
+        await asyncio.sleep(0.02)
+        conn._try_resolve_pending("SN1  T=72F")
+        # SN2 silent — should be missing from result.
+        conn._try_resolve_pending("SN3  T=68F")
+
+    asyncio.create_task(deliver())
+    result = await conn.async_send_global_command(
+        "TEMP?", expected_addresses=[1, 2, 3], timeout=0.5,
+    )
+    assert set(result.keys()) == {1, 3}
+    # Pending registry cleaned up regardless of timeout outcome.
+    assert 2 not in conn._pending
+
+
+async def test_global_command_not_connected_returns_empty(hass) -> None:
+    conn = _make_serial_conn(hass)
+    # Not setting STATE_CONNECTED
+    result = await conn.async_send_global_command(
+        "TEMP?", expected_addresses=[1, 2], timeout=0.1,
+    )
+    assert result == {}
+
+
+async def test_global_command_empty_addresses_returns_empty(hass) -> None:
+    conn = _make_serial_conn(hass)
+    conn._state = STATE_CONNECTED
+    conn._writer = _FakeWriter()
+    result = await conn.async_send_global_command(
+        "TEMP?", expected_addresses=[], timeout=0.1,
+    )
+    assert result == {}
+
+
 async def test_cancel_all_pending_unblocks_waiters(hass) -> None:
     """Disconnect-time cancellation unblocks any in-flight requests."""
     conn = _make_serial_conn(hass)

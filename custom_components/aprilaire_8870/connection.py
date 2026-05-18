@@ -195,6 +195,92 @@ class AprilaireConnectionBase(ABC):
                 future.cancel()
         self._pending.clear()
 
+    async def async_send_global_command(
+        self,
+        command: str,
+        expected_addresses: List[int],
+        timeout: float = 5.0,
+    ) -> Dict[int, str]:
+        """Send ``SN0 <command>`` and collect responses from every expected address.
+
+        The 8870 protocol supports SN0 (or blank-address) as a global broadcast
+        per the install manual appendix: ``SN? or SN0? will respond with all
+        connected thermostats returning their address``. Same applies to reads
+        and writes — one wire-level command, N responses (one per device).
+
+        Pre-registers a future for each expected address, sends the global
+        once, awaits up to ``timeout`` for each response, returns whatever
+        arrived. Missing addresses are silently omitted (caller logs).
+
+        For writes the firmware may or may not echo a per-device confirmation.
+        Caller treats the result as "best effort, what came back came back".
+
+        ``command`` should be the command body without the SN prefix —
+        e.g. ``"TEMP?"`` or ``"CR=NORMAL"``.
+        """
+        if not self.is_connected():
+            _LOGGER.debug("Cannot send global command, not connected")
+            return {}
+        if not expected_addresses:
+            return {}
+
+        # Pre-register one future per expected address. Any address that
+        # already has a pending request (e.g. concurrent SN<addr> command)
+        # gets serialized — wait for it to complete first so we don't
+        # collide on the per-address slot.
+        futures: Dict[int, asyncio.Future] = {}
+        for address in expected_addresses:
+            existing = self._pending.get(address)
+            if existing is not None and not existing.done():
+                try:
+                    await existing
+                except (asyncio.CancelledError, asyncio.TimeoutError):
+                    pass
+            f: asyncio.Future = self.hass.loop.create_future()
+            self._pending[address] = f
+            futures[address] = f
+
+        responses: Dict[int, str] = {}
+        try:
+            try:
+                async with self._send_lock:
+                    formatted = f"SN0 {command}"
+                    if not formatted.endswith("\r"):
+                        formatted += "\r"
+                    await self.async_send_command(formatted)
+            except Exception as err:  # pylint: disable=broad-except
+                _LOGGER.error("Error sending global command %s: %s", command, err)
+                return {}
+
+            # Wait for all-or-timeout. We use a single timeout window for the
+            # whole batch — individual devices' jitter just consumes part of it.
+            done, pending = await asyncio.wait(
+                set(futures.values()),
+                timeout=timeout,
+                return_when=asyncio.ALL_COMPLETED,
+            )
+            for address, future in futures.items():
+                if future in done and not future.cancelled():
+                    try:
+                        responses[address] = future.result()
+                    except Exception:  # pragma: no cover - defensive
+                        continue
+            if len(responses) < len(expected_addresses):
+                _LOGGER.debug(
+                    "Global %s: got %d/%d responses (missing %s)",
+                    command,
+                    len(responses),
+                    len(expected_addresses),
+                    sorted(set(expected_addresses) - set(responses)),
+                )
+        finally:
+            for address, future in futures.items():
+                if self._pending.get(address) is future:
+                    self._pending.pop(address, None)
+                if not future.done():
+                    future.cancel()
+        return responses
+
     async def async_send_command_with_response(
         self, command: str, timeout: float = 3.0
     ) -> Optional[str]:
