@@ -208,25 +208,116 @@ async def test_initialize_devices_outer_exception(hass) -> None:
 
 
 async def test_setup_cos_background_uses_bulk_globals(hass) -> None:
-    """v0.4.0: COS setup uses SN0 global commands, not per-device async_enable_cos."""
+    """v0.4.0/v0.4.4: COS setup uses SN0 globals, with v0.4.4 bulk readback."""
     dev1 = MagicMock()
     dev2 = MagicMock()
     entry = MockConfigEntry(domain=DOMAIN, data={})
     entry.add_to_hass(hass)
     runtime = _attach_runtime_data(entry)
     runtime.connection.is_connected = MagicMock(return_value=True)
-    runtime.connection.async_send_global_command = AsyncMock(
-        return_value={1: "SN1 CR=NORMAL", 2: "SN2Kitchen  CR=NORMAL"}
-    )
+
+    # Each flag readback returns =ON for both devices, so no per-device
+    # retries are needed.
+    def fake_global(cmd, expected_addresses, timeout=None):
+        if cmd == "CR=NORMAL":
+            return {1: "SN1 CR=NORMAL", 2: "SN2Kitchen  CR=NORMAL"}
+        if cmd.endswith("?"):
+            flag = cmd[:-1].upper()
+            return {1: f"SN1 {flag}=ON", 2: f"SN2 {flag}=ON"}
+        # cN=ON bulk writes — echo back
+        flag = cmd.split("=", 1)[0].upper()
+        return {1: f"SN1 {flag}=ON", 2: f"SN2 {flag}=ON"}
+
+    runtime.connection.async_send_global_command = AsyncMock(side_effect=fake_global)
     await async_setup_cos_background(hass, entry, {1: dev1, 2: dev2})
-    # CR=NORMAL plus 7 default flags = 8 global commands total.
-    assert runtime.connection.async_send_global_command.call_count >= 8
-    # Devices marked as cos_enabled.
+
+    # CR=NORMAL (1) + 7 flags × (write + readback) = 15 global commands.
+    assert runtime.connection.async_send_global_command.call_count == 15
+    # All flags accepted on both devices.
     assert dev1._cos_enabled is True
     assert dev2._cos_enabled is True
-    # Per-device async_enable_cos no longer called (it's now an unused path).
-    assert not hasattr(dev1.async_enable_cos, "assert_called") or \
-        not dev1.async_enable_cos.called
+    from custom_components.aprilaire_8870.const import DEFAULT_COS_FLAGS
+    assert dev1._cos_flags == set(DEFAULT_COS_FLAGS)
+    assert dev2._cos_flags == set(DEFAULT_COS_FLAGS)
+
+
+async def test_setup_cos_background_retries_devices_that_missed_bulk(hass) -> None:
+    """v0.4.4: addresses that don't echo =ON to the bulk readback get a
+    per-device write + readback. The smoking gun in the v0.4.3 logs was
+    SN4 oscillating 76↔77 eight times with zero T= broadcasts because
+    its c2=ON never stuck; this is the fix for that.
+    """
+    dev1 = MagicMock()
+    dev1.protocol = MagicMock()
+    dev1.protocol.execute_assignment_command = AsyncMock(return_value="SN1 c2=ON")
+    dev1.protocol.execute_query_command = AsyncMock(return_value="ON")
+    dev2 = MagicMock()
+    dev2.protocol = MagicMock()
+    # Device 2 silently accepts on retry too.
+    dev2.protocol.execute_assignment_command = AsyncMock(return_value="SN2 c2=ON")
+    dev2.protocol.execute_query_command = AsyncMock(return_value="ON")
+
+    entry = MockConfigEntry(domain=DOMAIN, data={})
+    entry.add_to_hass(hass)
+    runtime = _attach_runtime_data(entry)
+    runtime.connection.is_connected = MagicMock(return_value=True)
+
+    def fake_global(cmd, expected_addresses, timeout=None):
+        if cmd == "CR=NORMAL":
+            return {1: "SN1 CR=NORMAL", 2: "SN2 CR=NORMAL"}
+        if cmd.endswith("?"):
+            flag = cmd[:-1].upper()
+            # On readback, device 2 reports OFF for c2 only (simulates the
+            # bulk write being missed) — everything else echoes ON.
+            if flag == "C2":
+                return {1: "SN1 C2=ON", 2: "SN2 C2=OFF"}
+            return {1: f"SN1 {flag}=ON", 2: f"SN2 {flag}=ON"}
+        flag = cmd.split("=", 1)[0].upper()
+        return {1: f"SN1 {flag}=ON", 2: f"SN2 {flag}=ON"}
+
+    runtime.connection.async_send_global_command = AsyncMock(side_effect=fake_global)
+    await async_setup_cos_background(hass, entry, {1: dev1, 2: dev2})
+
+    # Only device 2 needed a retry, and only for c2.
+    dev1.protocol.execute_assignment_command.assert_not_called()
+    dev2.protocol.execute_assignment_command.assert_called_once_with(2, "c2", "ON")
+    dev2.protocol.execute_query_command.assert_called_once_with(2, "c2")
+
+    # After successful retry, c2 should be in dev2's enabled set.
+    assert "c2" in dev2._cos_flags
+
+
+async def test_setup_cos_background_retry_giveup_logs_but_continues(hass) -> None:
+    """When the per-device retry still doesn't stick, just log and move on —
+    other devices and other flags shouldn't be blocked.
+    """
+    dev = MagicMock()
+    dev.protocol = MagicMock()
+    dev.protocol.execute_assignment_command = AsyncMock(return_value=None)
+    dev.protocol.execute_query_command = AsyncMock(return_value="OFF")
+
+    entry = MockConfigEntry(domain=DOMAIN, data={})
+    entry.add_to_hass(hass)
+    runtime = _attach_runtime_data(entry)
+    runtime.connection.is_connected = MagicMock(return_value=True)
+
+    def fake_global(cmd, expected_addresses, timeout=None):
+        if cmd == "CR=NORMAL":
+            return {1: "SN1 CR=NORMAL"}
+        if cmd.endswith("?"):
+            # Always says OFF on readback — every flag needs retry, every
+            # retry fails.
+            flag = cmd[:-1].upper()
+            return {1: f"SN1 {flag}=OFF"}
+        return {}
+
+    runtime.connection.async_send_global_command = AsyncMock(side_effect=fake_global)
+    await async_setup_cos_background(hass, entry, {1: dev})
+
+    # All 7 flags attempted a retry.
+    assert dev.protocol.execute_assignment_command.call_count == 7
+    # None stuck.
+    assert dev._cos_flags == set()
 
 
 async def test_setup_cos_background_no_devices_returns(hass) -> None:

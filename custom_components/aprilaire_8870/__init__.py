@@ -282,30 +282,82 @@ async def async_setup_cos_background(
             if address in cr_ok:
                 _LOGGER.debug("CR=NORMAL echoed by thermostat %s", address)
 
-        # 2. Best-effort flag enable, one global per flag.
-        accepted_flags_per_device: Dict[int, set] = {addr: set() for addr in addresses}
+        # 2. Per-flag: bulk write → bulk readback → per-device retry.
+        #
+        # v0.4.4: live-log triage showed C1 broadcasts flowing but C2
+        # broadcasts sparse — only ~4 unsolicited T= messages across 11
+        # devices over 95 minutes despite ~14 polled temperature
+        # transitions. Root cause: the previous flow trusted the one-shot
+        # SN0 c<n>=ON write whether or not each device echoed back, so
+        # any thermostat that missed the global silently never had the
+        # flag enabled. Fix: read each flag back with SN0 c<n>? after
+        # writing, and per-device retry for any address that reports
+        # OFF. Adds ~7 extra SN0 queries + a small handful of per-device
+        # retries at startup; ensures all C-flags actually stick.
+        enabled_flags_per_device: Dict[int, set] = {addr: set() for addr in addresses}
+        retry_total = 0
         for flag in sorted(DEFAULT_COS_FLAGS):
-            flag_responses = await connection.async_send_global_command(
+            # Bulk write.
+            await connection.async_send_global_command(
                 f"{flag}=ON", expected_addresses=addresses, timeout=2.0,
             )
-            for addr, line in flag_responses.items():
-                if f"{flag.upper()}=ON" in line.upper():
-                    accepted_flags_per_device[addr].add(flag)
+            # Bulk readback. Firmware echoes uppercase ``C<n>=ON``/``=OFF``.
+            verify_responses = await connection.async_send_global_command(
+                f"{flag}?", expected_addresses=addresses, timeout=3.0,
+            )
 
-        # Update each device's _cos_flags from what its firmware echoed
-        # back. Devices that echoed nothing keep an empty set but still
-        # have _cos_enabled=True — broadcasts may still arrive.
-        accepted_total = 0
+            needs_retry: list[int] = []
+            for addr in addresses:
+                line = (verify_responses.get(addr) or "").upper()
+                if f"{flag.upper()}=ON" in line:
+                    enabled_flags_per_device[addr].add(flag)
+                else:
+                    # No echo OR echo said OFF — needs a per-device retry.
+                    needs_retry.append(addr)
+
+            # Per-device retry for any device that didn't accept the bulk.
+            # One write + one readback per address is enough — if it still
+            # doesn't take, that's a firmware/wiring problem, not a
+            # protocol race.
+            for addr in needs_retry:
+                device = devices.get(addr)
+                if device is None or device.protocol is None:
+                    continue
+                try:
+                    await device.protocol.execute_assignment_command(addr, flag, "ON")
+                    verify = await device.protocol.execute_query_command(addr, flag)
+                except Exception as retry_ex:  # pragma: no cover (defensive)
+                    _LOGGER.debug(
+                        "COS retry for %s on thermostat %s raised: %s",
+                        flag, addr, retry_ex,
+                    )
+                    continue
+                if verify and verify.upper().strip() == "ON":
+                    enabled_flags_per_device[addr].add(flag)
+                    retry_total += 1
+                else:
+                    _LOGGER.info(
+                        "COS flag %s did not enable on thermostat %s after retry "
+                        "(verify=%s) — broadcasts for this flag won't arrive from "
+                        "this device; the bulk poller still keeps state fresh.",
+                        flag, addr, verify,
+                    )
+
+        # Record per-device enabled flags. _cos_flags is now AUTHORITATIVE —
+        # an empty set means COS broadcasts won't arrive for that device,
+        # and async_verify_cos can give a real answer instead of guessing.
+        enabled_total = 0
         for address in addresses:
             device = devices.get(address)
             if device is None:
                 continue
-            device._cos_flags = accepted_flags_per_device[address] or set(DEFAULT_COS_FLAGS)
-            accepted_total += len(accepted_flags_per_device[address])
+            device._cos_flags = enabled_flags_per_device[address]
+            enabled_total += len(enabled_flags_per_device[address])
 
+        expected_total = len(addresses) * len(DEFAULT_COS_FLAGS)
         _LOGGER.info(
-            "COS bulk setup complete: %d devices, %d total flag echoes confirmed",
-            len(addresses), accepted_total,
+            "COS bulk setup complete: %d/%d device-flags enabled (%d retries succeeded)",
+            enabled_total, expected_total, retry_total,
         )
     except Exception as ex:
         _LOGGER.exception("Critical error during bulk COS setup: %s", ex)
