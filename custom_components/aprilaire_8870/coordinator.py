@@ -576,10 +576,18 @@ class AprilaireDataUpdateCoordinator(DataUpdateCoordinator):
         essentials.append(("SH", "SH"))
         essentials.append(("SC", "SC"))
 
+        # Per the 8870 programmer's manual: when responses are expected to
+        # a global command, the host must wait 265ms × "Number of Thermostats
+        # on Network" before sending the next command. That setting defaults
+        # to 32 on the device (set via on-thermostat menu), so the last
+        # response can arrive at ~8.5s even with fewer actual thermostats.
+        # 9s gives us a safety margin without being wastefully long.
+        global_response_window = 9.0
         for code, dispatch_name in essentials:
             try:
                 responses = await self.connection.async_send_global_command(
-                    f"{code}?", expected_addresses=addresses, timeout=3.0,
+                    f"{code}?", expected_addresses=addresses,
+                    timeout=global_response_window,
                 )
             except Exception as bulk_ex:  # pragma: no cover (defensive)
                 _LOGGER.debug("Bulk %s? failed: %s", code, bulk_ex)
