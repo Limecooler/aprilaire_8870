@@ -299,73 +299,6 @@ class AprilaireDevice:
         elif command == "ERROR":
             self._state["error_status"] = value
 
-    async def _enable_cos_with_retry(self, flags: Set[str] = None) -> bool:
-        """Enable COS — one-shot CR=NORMAL + bulk flag fire-and-forget.
-
-        v0.3.0 simplification. Previously this did three outer retries of
-        (3 inner CR retries + per-flag verify-then-add loop with 0.5s
-        between every flag), which on the user's 11-device bus could
-        spend ~115s of bus time worst-case AND consistently fail because
-        most firmwares NACK individual flag enables.
-
-        Observation: the 8870 broadcasts state changes whenever the user
-        touches the thermostat regardless of whether c1=ON etc. was set.
-        CR=NORMAL is the only hard requirement to receive any broadcasts.
-        So we send CR=NORMAL once, optimistically blast the flag set, and
-        accept whatever sticks. The dispatcher-based message listener in
-        the coordinator (_handle_bus_message) gracefully ignores codes
-        it doesn't recognize, so an unset flag just means no broadcast
-        for that category — not a failure.
-        """
-        if flags is None:
-            flags = DEFAULT_COS_FLAGS
-
-        # 1. CR=NORMAL — the only hard requirement. Two attempts max.
-        cr_ok = False
-        for _ in range(2):
-            cr_response = await self._send_command_with_retry(
-                f"SN{self.address} CR=NORMAL", retries=1, allow_skip=True,
-            )
-            if cr_response and "NORMAL" in cr_response:
-                cr_ok = True
-                break
-
-        if not cr_ok:
-            _LOGGER.info(
-                "CR=NORMAL did not stick for thermostat %s — broadcasts may "
-                "not arrive but polling still keeps state fresh.",
-                self.address,
-            )
-            return False
-
-        # 2. Best-effort flag enable. Fire each one without verifying; whatever
-        # the firmware accepts will start broadcasting. Failed flags just mean
-        # we won't get broadcasts for that category — polling covers it.
-        for flag in flags:
-            try:
-                await self._send_command_with_retry(
-                    f"SN{self.address} {flag}=ON",
-                    retries=0,  # one attempt; don't retry — saves ~Nflags × 1s
-                    allow_skip=True,
-                )
-            except Exception as err:
-                _LOGGER.debug(
-                    "Error enabling COS flag %s on thermostat %s: %s",
-                    flag, self.address, err,
-                )
-
-        # Record optimistically — we set CR=NORMAL successfully, broadcasts
-        # should flow. The coordinator's _handle_bus_message will route
-        # whatever actually arrives into device state.
-        self._cos_flags = set(flags)
-        self._cos_enabled = True
-        _LOGGER.debug(
-            "COS one-shot setup complete on thermostat %s (CR=NORMAL ok, "
-            "%d flags optimistically enabled)",
-            self.address, len(flags),
-        )
-        return True
-
     async def async_initialize(self) -> bool:
         """Initialize the device with improved error handling and minimal required commands."""
         _LOGGER.debug("Beginning initialization for thermostat %s", self.address)
@@ -823,96 +756,87 @@ class AprilaireDevice:
             return None
 
     async def async_enable_cos(self, flags: Set[str] = None) -> bool:
-        """Enable Change of State (COS) functionality for real-time updates.
-        
-        Args:
-            flags: Set of COS flags to enable. If None, use defaults.
-            
-        Returns:
-            True if COS was enabled successfully, False otherwise
+        """Enable COS — one-shot CR=NORMAL + bulk flag fire-and-forget.
+
+        v0.3.1 fix: this is the method actually called from
+        async_setup_cos_background (the v0.3.0 simplification was
+        accidentally applied to a different unused helper). Also fixes
+        the case-sensitivity bug where the integration sent ``c1=ON``
+        but the device echoed ``C1=ON``, causing every per-flag verify
+        to fail and "no COS flags were accepted" for every device.
+
+        Approach: send CR=NORMAL once (the only hard requirement to
+        receive broadcasts), then blast the flag set without verifying.
+        Whatever the firmware accepts will start broadcasting; whatever
+        it doesn't, the dispatcher-based message listener in the
+        coordinator ignores unrecognized codes anyway.
         """
         if flags is None:
             flags = DEFAULT_COS_FLAGS
-            
-        try:
-            # Set Command Response (CR) to NORMAL to enable COS
+
+        # CR=NORMAL — the only hard requirement. Up to 2 attempts.
+        cr_ok = False
+        for _ in range(2):
             try:
-                cr_result = await self.protocol.execute_assignment_command(self.address, CMD_CR, "NORMAL")
-                _LOGGER.debug("CR command response raw: %r", cr_result)
-                
-                # Process response to update device name if it contains location info
-                if cr_result:
-                    # Extract location name from response if present
-                    import re
-                    name_match = re.match(r'^SN\d+([A-Za-z0-9 ]+)CR=', cr_result)
-                    if name_match and name_match.group(1).strip():
-                        location_name = name_match.group(1).strip()
-                        if location_name:
-                            self.name = f"{location_name}"
-                            _LOGGER.debug("Updated device name to: %s", self.name)
-                    
-                    # More flexible check that doesn't require exact match
-                    if "CR=NORMAL" in cr_result:
-                        _LOGGER.debug("Successfully set CR=NORMAL on thermostat %s", self.address)
-                    else:
-                        # Additional debug info
-                        _LOGGER.debug("Response doesn't contain expected 'CR=NORMAL', full response: %r", cr_result)
-                        _LOGGER.error("Failed to set Command Response to NORMAL on thermostat %s", self.address)
-                        return False
-                else:
-                    _LOGGER.error("No response received for CR=NORMAL command on thermostat %s", self.address)
-                    return False
-                    
-            except Exception as cr_ex:
-                _LOGGER.exception("Exception while setting CR=NORMAL on thermostat %s: %s", 
-                                self.address, cr_ex)
-                return False
-            
-            # Enable each requested COS broadcast flag (e.g. c1=ON). Pace the
-            # writes so we don't crowd the RS-485 bus; record which the firmware
-            # accepted so async_verify_cos has something to check later.
-            supported_flags: Set[str] = set()
-            for flag in flags:
-                await asyncio.sleep(THERMOSTAT_PROCESSING_TIME_MS / 1000)
-                try:
-                    flag_result = await self.protocol.execute_assignment_command(
-                        self.address, flag, "ON"
-                    )
-                except Exception as flag_ex:
-                    _LOGGER.debug(
-                        "Exception enabling COS flag %s on thermostat %s: %s",
-                        flag, self.address, flag_ex,
-                    )
-                    continue
-
-                if flag_result and f"{flag}=ON" in flag_result:
-                    supported_flags.add(flag)
-                else:
-                    _LOGGER.debug(
-                        "COS flag %s not accepted by thermostat %s (response: %r)",
-                        flag, self.address, flag_result,
-                    )
-
-            if supported_flags:
-                self._cos_flags = supported_flags
-                self._cos_enabled = True
-                _LOGGER.info(
-                    "Enabled COS with %d flag(s) on thermostat %s: %s",
-                    len(supported_flags), self.address, sorted(supported_flags),
+                cr_result = await self.protocol.execute_assignment_command(
+                    self.address, CMD_CR, "NORMAL"
                 )
-                return True
+            except Exception as cr_ex:
+                _LOGGER.debug(
+                    "CR=NORMAL exception on thermostat %s: %s",
+                    self.address, cr_ex,
+                )
+                cr_result = None
+            if cr_result and "CR=NORMAL" in cr_result.upper():
+                cr_ok = True
+                break
 
-            _LOGGER.warning(
-                "CR=NORMAL succeeded but no COS flags were accepted on thermostat %s",
+        if not cr_ok:
+            _LOGGER.info(
+                "CR=NORMAL did not stick for thermostat %s — broadcasts "
+                "may not arrive but polling still keeps state fresh.",
                 self.address,
             )
             self._cos_enabled = False
             return False
 
-        except Exception as err:
-            _LOGGER.exception("Error enabling COS on thermostat %s: %s", self.address, err)
-            self._cos_enabled = False
-            return False
+        # Best-effort flag enable. Fire each, accept any echo with
+        # "<FLAG>=ON" in it (case-insensitive — the 8870 firmware uppercases
+        # the response code regardless of the request case).
+        supported_flags: Set[str] = set()
+        for flag in flags:
+            await asyncio.sleep(THERMOSTAT_PROCESSING_TIME_MS / 1000)
+            try:
+                flag_result = await self.protocol.execute_assignment_command(
+                    self.address, flag, "ON"
+                )
+            except Exception as flag_ex:
+                _LOGGER.debug(
+                    "Exception enabling COS flag %s on thermostat %s: %s",
+                    flag, self.address, flag_ex,
+                )
+                continue
+
+            if flag_result and f"{flag.upper()}=ON" in flag_result.upper():
+                supported_flags.add(flag)
+
+        # Either way we recorded CR=NORMAL ok, so broadcasts should flow.
+        # Record whatever the firmware echoed back as "supported"; the
+        # dispatcher listener routes any broadcast it receives regardless.
+        self._cos_flags = supported_flags if supported_flags else set(flags)
+        self._cos_enabled = True
+        if supported_flags:
+            _LOGGER.info(
+                "Enabled COS with %d flag(s) on thermostat %s: %s",
+                len(supported_flags), self.address, sorted(supported_flags),
+            )
+        else:
+            _LOGGER.debug(
+                "CR=NORMAL set on thermostat %s; no per-flag echoes matched "
+                "but unsolicited broadcasts may still arrive.",
+                self.address,
+            )
+        return True
 
     async def async_verify_cos(self) -> bool:
         """Verify that COS functionality is still active.

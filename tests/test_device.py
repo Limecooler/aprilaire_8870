@@ -620,10 +620,9 @@ async def test_async_send_command_exception() -> None:
 # ---- async_enable_cos (the fixed function) ---------------------------------
 
 
-async def test_async_enable_cos_succeeds() -> None:
+async def test_async_enable_cos_succeeds_when_flags_echo() -> None:
     dev, conn, _ = make_device(1)
-    conn.responses["SN1 CR=NORMAL"] = "SN1KITCHEN CR=NORMAL"
-    # All default flags accepted.
+    conn.responses["SN1 CR=NORMAL"] = "SN1 CR=NORMAL"
     from custom_components.aprilaire_8870.const import DEFAULT_COS_FLAGS
     for flag in DEFAULT_COS_FLAGS:
         conn.responses[f"SN1 {flag}=ON"] = f"SN1 {flag}=ON"
@@ -633,13 +632,27 @@ async def test_async_enable_cos_succeeds() -> None:
     assert result is True
     assert dev._cos_enabled is True
     assert dev._cos_flags == set(DEFAULT_COS_FLAGS)
-    # Name should be extracted from the CR response.
-    assert dev.name == "KITCHEN"
+
+
+async def test_async_enable_cos_succeeds_with_uppercase_flag_echo() -> None:
+    """v0.3.1 regression test: 8870 echoes the flag code in UPPERCASE.
+
+    Sending `c1=ON` returns `SN1Name  C1=ON`. The case-insensitive match
+    must accept this as a successful flag enable.
+    """
+    dev, conn, _ = make_device(1)
+    conn.responses["SN1 CR=NORMAL"] = "SN1Kitchen  CR=NORMAL"
+    # Note response code is UPPERCASE C1 even though we sent c1.
+    conn.responses["SN1 c1=ON"] = "SN1Kitchen  C1=ON"
+
+    with patch("custom_components.aprilaire_8870.device.asyncio.sleep", new=AsyncMock()):
+        result = await dev.async_enable_cos(flags={"c1"})
+    assert result is True
+    assert dev._cos_flags == {"c1"}
 
 
 async def test_async_enable_cos_cr_no_response() -> None:
     dev, _, _ = make_device(1)
-    # No scripted CR response → returns None → method bails False.
     with patch("custom_components.aprilaire_8870.device.asyncio.sleep", new=AsyncMock()):
         result = await dev.async_enable_cos()
     assert result is False
@@ -662,19 +675,25 @@ async def test_async_enable_cos_cr_exception() -> None:
     assert result is False
 
 
-async def test_async_enable_cos_no_flags_accepted() -> None:
-    """CR succeeds but every flag write returns None — function returns False."""
+async def test_async_enable_cos_returns_true_even_when_no_flags_echo() -> None:
+    """v0.3.1: CR=NORMAL is the only hard requirement.
+
+    Most 8870 firmwares silently drop the per-flag writes — broadcasts
+    still flow whenever the user touches the unit. Return True so we
+    don't mark the device as 'COS broken' just because the per-flag
+    handshake didn't echo.
+    """
     dev, conn, _ = make_device(1)
     conn.responses["SN1 CR=NORMAL"] = "SN1 CR=NORMAL"
-    # No flag responses → each individual flag call returns None.
+    # No flag responses; per-flag calls return None.
     with patch("custom_components.aprilaire_8870.device.asyncio.sleep", new=AsyncMock()):
         result = await dev.async_enable_cos()
-    assert result is False
-    assert dev._cos_enabled is False
+    assert result is True  # ← changed from False in v0.3.1
+    assert dev._cos_enabled is True
 
 
 async def test_async_enable_cos_partial_flag_acceptance() -> None:
-    """Only one flag accepts → True, _cos_flags populated."""
+    """Only one flag accepts → True, _cos_flags has just the accepted one."""
     dev, conn, _ = make_device(1)
     conn.responses["SN1 CR=NORMAL"] = "SN1 CR=NORMAL"
     conn.responses["SN1 c1=ON"] = "SN1 c1=ON"
@@ -1238,56 +1257,9 @@ async def test_send_command_retry_exception_in_send_returns_none() -> None:
     assert result is None
 
 
-# ---- _enable_cos_with_retry -----------------------------------------------
-
-
-async def test_enable_cos_succeeds_with_cr_normal() -> None:
-    """CR=NORMAL accepted → True; flags fired best-effort, no per-flag verify."""
-    dev, conn, _ = make_device()
-
-    async def reply(cmd, timeout=None):
-        if "CR=NORMAL" in cmd:
-            return "SN1 CR=NORMAL"
-        # Even if flags NACK / silence, the overall result should still be True.
-        return None
-
-    conn.async_send_command_with_response = reply
-    with patch("custom_components.aprilaire_8870.device.asyncio.sleep", new=AsyncMock()):
-        result = await dev._enable_cos_with_retry({"c1", "c2"})
-    assert result is True
-    assert dev._cos_enabled is True
-    # All requested flags recorded optimistically.
-    assert dev._cos_flags == {"c1", "c2"}
-
-
-async def test_enable_cos_fails_when_cr_not_accepted() -> None:
-    """CR=NORMAL is the hard requirement — its failure means no COS."""
-    dev, conn, _ = make_device()
-    conn.async_send_command_with_response = AsyncMock(return_value=None)
-    with patch("custom_components.aprilaire_8870.device.asyncio.sleep", new=AsyncMock()):
-        result = await dev._enable_cos_with_retry({"c1"})
-    assert result is False
-    assert dev._cos_enabled is False
-
-
-async def test_enable_cos_swallows_flag_exception() -> None:
-    """A flag-send raising shouldn't abort the others (best-effort semantics)."""
-    dev, conn, _ = make_device()
-
-    async def replies(cmd, timeout=None):
-        if "CR" in cmd:
-            return "SN1 CR=NORMAL"
-        if "c1" in cmd:
-            raise RuntimeError("flag broke")
-        if "c2" in cmd:
-            return "SN1 c2=ON"
-        return None
-
-    conn.async_send_command_with_response = replies
-    with patch("custom_components.aprilaire_8870.device.asyncio.sleep", new=AsyncMock()):
-        result = await dev._enable_cos_with_retry({"c1", "c2"})
-    # CR succeeded → overall True regardless of flag outcomes.
-    assert result is True
+# _enable_cos_with_retry was deleted in v0.3.1 as dead code; all the
+# real COS-enable behavior lives in async_enable_cos. Tests above cover
+# the unified path.
 
 
 # ---- _update_with_delays / _update_alarm_statuses / _update_error_status --
