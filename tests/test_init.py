@@ -207,26 +207,53 @@ async def test_initialize_devices_outer_exception(hass) -> None:
 # ---- async_setup_cos_background -------------------------------------------
 
 
-async def test_setup_cos_background(hass) -> None:
+async def test_setup_cos_background_uses_bulk_globals(hass) -> None:
+    """v0.4.0: COS setup uses SN0 global commands, not per-device async_enable_cos."""
+    dev1 = MagicMock()
+    dev2 = MagicMock()
+    entry = MockConfigEntry(domain=DOMAIN, data={})
+    entry.add_to_hass(hass)
+    runtime = _attach_runtime_data(entry)
+    runtime.connection.is_connected = MagicMock(return_value=True)
+    runtime.connection.async_send_global_command = AsyncMock(
+        return_value={1: "SN1 CR=NORMAL", 2: "SN2Kitchen  CR=NORMAL"}
+    )
+    await async_setup_cos_background(hass, entry, {1: dev1, 2: dev2})
+    # CR=NORMAL plus 7 default flags = 8 global commands total.
+    assert runtime.connection.async_send_global_command.call_count >= 8
+    # Devices marked as cos_enabled.
+    assert dev1._cos_enabled is True
+    assert dev2._cos_enabled is True
+    # Per-device async_enable_cos no longer called (it's now an unused path).
+    assert not hasattr(dev1.async_enable_cos, "assert_called") or \
+        not dev1.async_enable_cos.called
+
+
+async def test_setup_cos_background_no_devices_returns(hass) -> None:
+    entry = MockConfigEntry(domain=DOMAIN, data={})
+    entry.add_to_hass(hass)
+    _attach_runtime_data(entry)
+    await async_setup_cos_background(hass, entry, {})
+
+
+async def test_setup_cos_background_no_connection_returns(hass) -> None:
+    entry = MockConfigEntry(domain=DOMAIN, data={})
+    entry.add_to_hass(hass)
+    runtime = _attach_runtime_data(entry)
+    runtime.connection.is_connected = MagicMock(return_value=False)
+    # Should not raise; just no-op.
+    await async_setup_cos_background(hass, entry, {1: MagicMock()})
+
+
+async def test_setup_cos_background_swallows_exceptions(hass) -> None:
     dev = MagicMock()
-    dev.async_enable_cos = AsyncMock()
-    with patch("custom_components.aprilaire_8870.asyncio.sleep", new=AsyncMock()):
-        await async_setup_cos_background(hass, MagicMock(), {1: dev})
-    dev.async_enable_cos.assert_called_once()
-
-
-async def test_setup_cos_background_per_device_exception(hass) -> None:
-    dev = MagicMock()
-    dev.async_enable_cos = AsyncMock(side_effect=RuntimeError("boom"))
-    with patch("custom_components.aprilaire_8870.asyncio.sleep", new=AsyncMock()):
-        await async_setup_cos_background(hass, MagicMock(), {1: dev})
-
-
-async def test_setup_cos_background_outer_exception(hass) -> None:
-    with patch("custom_components.aprilaire_8870.asyncio.sleep",
-               side_effect=RuntimeError("outer")):
-        # Empty dict iteration won't sleep, force devices to a non-iterable.
-        await async_setup_cos_background(hass, MagicMock(), MagicMock(items=MagicMock(side_effect=RuntimeError("bad"))))
+    entry = MockConfigEntry(domain=DOMAIN, data={})
+    entry.add_to_hass(hass)
+    runtime = _attach_runtime_data(entry)
+    runtime.connection.is_connected = MagicMock(return_value=True)
+    runtime.connection.async_send_global_command = AsyncMock(side_effect=RuntimeError("boom"))
+    # Should not raise.
+    await async_setup_cos_background(hass, entry, {1: dev})
 
 
 # ---- async_setup_entry ----------------------------------------------------
