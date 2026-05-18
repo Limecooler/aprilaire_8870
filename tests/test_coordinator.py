@@ -791,6 +791,8 @@ async def test_bulk_poll_essentials_includes_hum_ot_when_flags_on(hass) -> None:
     dev._process_state_response = MagicMock()
     dev.monitor_humidity = True
     dev.monitor_outdoor_temp = True
+    dev._humidity_supported = None  # unknown — should query
+    dev._outdoor_temp_supported = None
     dev._consecutive_full_poll_failures = 0
     dev._slow_keepalive_mode = False
     coord = make_coord(hass, devices={1: dev})
@@ -802,6 +804,71 @@ async def test_bulk_poll_essentials_includes_hum_ot_when_flags_on(hass) -> None:
     # Must include HUM? and OT? alongside the essentials.
     assert "HUM?" in sent_commands
     assert "OT?" in sent_commands
+
+
+async def test_bulk_poll_essentials_skips_hum_ot_when_all_devices_unsupported(hass) -> None:
+    """v0.4.7: don't waste ~6s of bus time per cycle querying HUM/OT when
+    every device has already reported the firmware "no sensor wired"
+    sentinel (--%/--F). Resumes querying if any device flips back to
+    supported (e.g. unsolicited HUM= broadcast with a real value).
+    """
+    dev_a = MagicMock()
+    dev_a._process_state_response = MagicMock()
+    dev_a.monitor_humidity = True
+    dev_a.monitor_outdoor_temp = True
+    dev_a._humidity_supported = False  # confirmed --%
+    dev_a._outdoor_temp_supported = False
+    dev_a._consecutive_full_poll_failures = 0
+    dev_a._slow_keepalive_mode = False
+    dev_b = MagicMock()
+    dev_b._process_state_response = MagicMock()
+    dev_b.monitor_humidity = True
+    dev_b.monitor_outdoor_temp = True
+    dev_b._humidity_supported = False
+    dev_b._outdoor_temp_supported = False
+    dev_b._consecutive_full_poll_failures = 0
+    dev_b._slow_keepalive_mode = False
+    coord = make_coord(hass, devices={1: dev_a, 2: dev_b})
+    coord.connection.is_connected = MagicMock(return_value=True)
+    send_mock = AsyncMock(return_value={})
+    coord.connection.async_send_global_command = send_mock
+    await coord._async_bulk_poll_essentials()
+    sent_commands = [c.args[0] for c in send_mock.call_args_list]
+    # Essentials still flow.
+    assert "TEMP?" in sent_commands
+    # HUM/OT suppressed because every device says "no sensor wired".
+    assert "HUM?" not in sent_commands
+    assert "OT?" not in sent_commands
+
+
+async def test_bulk_poll_essentials_queries_hum_ot_if_any_device_supports(hass) -> None:
+    """If even one device still has the sensor supported (or unknown),
+    we keep querying — the bulk SN0 cost is fixed regardless of how
+    many devices answer with real values."""
+    dev_with = MagicMock()
+    dev_with._process_state_response = MagicMock()
+    dev_with.monitor_humidity = True
+    dev_with.monitor_outdoor_temp = True
+    dev_with._humidity_supported = True  # this one has the sensor
+    dev_with._outdoor_temp_supported = False
+    dev_with._consecutive_full_poll_failures = 0
+    dev_with._slow_keepalive_mode = False
+    dev_without = MagicMock()
+    dev_without._process_state_response = MagicMock()
+    dev_without.monitor_humidity = True
+    dev_without.monitor_outdoor_temp = True
+    dev_without._humidity_supported = False
+    dev_without._outdoor_temp_supported = False
+    dev_without._consecutive_full_poll_failures = 0
+    dev_without._slow_keepalive_mode = False
+    coord = make_coord(hass, devices={1: dev_with, 2: dev_without})
+    coord.connection.is_connected = MagicMock(return_value=True)
+    send_mock = AsyncMock(return_value={})
+    coord.connection.async_send_global_command = send_mock
+    await coord._async_bulk_poll_essentials()
+    sent_commands = [c.args[0] for c in send_mock.call_args_list]
+    assert "HUM?" in sent_commands  # dev_with still wants it
+    assert "OT?" not in sent_commands  # neither has it
 
 
 async def test_bulk_poll_essentials_resets_circuit_breaker(hass) -> None:

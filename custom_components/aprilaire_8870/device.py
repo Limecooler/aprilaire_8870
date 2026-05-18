@@ -156,6 +156,17 @@ class AprilaireDevice:
         self._consecutive_full_poll_failures: int = 0
         self._slow_keepalive_mode: bool = False
 
+        # v0.4.7: per-device sensor support tracking. Initially unknown
+        # (None); flipped to True the first time a real reading comes back
+        # in a HUM=/OT= response and to False when ``--%``/``--F`` (the
+        # firmware "no sensor wired" sentinel) arrives. The coordinator's
+        # bulk-poll skips ``SN0 HUM?``/``SN0 OT?`` entirely when every
+        # device is marked False, and ``async_update``'s per-device path
+        # skips the query for unsupported devices — saves ~6s of bus time
+        # per cycle on a fully-unsensored bus.
+        self._humidity_supported: Optional[bool] = None
+        self._outdoor_temp_supported: Optional[bool] = None
+
     def update_from_real_device(self, real_device):
         """Update properties from a fully initialized device.
         
@@ -270,9 +281,16 @@ class AprilaireDevice:
         if command == "TEMP":
             self._state["temperature"] = self._parse_temperature(value)
         elif command == "HUM":
-            self._state["humidity"] = self._parse_humidity(value)
+            parsed = self._parse_humidity(value)
+            self._state["humidity"] = parsed
+            # v0.4.7: HUM=--% is the firmware "no sensor wired" sentinel.
+            # Track per-device so the coordinator can skip the global
+            # query when every device is unsupported.
+            self._humidity_supported = parsed is not None
         elif command == "OT":
-            self._state["outdoor_temperature"] = self._parse_temperature(value)
+            parsed = self._parse_temperature(value)
+            self._state["outdoor_temperature"] = parsed
+            self._outdoor_temp_supported = parsed is not None
         elif command == "MODE":
             self._state["mode"] = value
         elif command == "FAN":
@@ -398,6 +416,15 @@ class AprilaireDevice:
         caps = cached.get("capabilities") or {}
         if not caps:
             return False
+        # v0.4.7: normalize keys whose type might have drifted across
+        # versions. The capability cache pre-v0.4.6 persisted
+        # controller_type as the INT 0 (from the buggy `int(value)` in
+        # _parse_controller_type), and v0.4.6's loader was reading that
+        # int back into a string-typed field — so the equality check in
+        # async_set_temperature still failed for users whose cache
+        # predated v0.4.6 even after they upgraded. Coerce on load.
+        if "controller_type" in caps and not isinstance(caps["controller_type"], str):
+            caps["controller_type"] = str(caps["controller_type"])
         self.capabilities = dict(caps)
         return True
 
@@ -672,11 +699,16 @@ class AprilaireDevice:
             #
             # v0.4.1: HUM/OT are also handled by the bulk pass when
             # skip_essentials is set; only alarms remain per-device.
+            # v0.4.7: also skip per-device HUM/OT for devices that have
+            # already reported the firmware "no sensor wired" sentinel
+            # (``--%``/``--F``). If/when an unsolicited HUM/OT broadcast
+            # arrives with a real value, the support flag flips back to
+            # True and querying resumes.
             optional_commands: List[Tuple[str, str]] = []
             if not skip_essentials:
-                if self.monitor_humidity:
+                if self.monitor_humidity and self._humidity_supported is not False:
                     optional_commands.append(("HUM", CMD_HUM))
-                if self.monitor_outdoor_temp:
+                if self.monitor_outdoor_temp and self._outdoor_temp_supported is not False:
                     optional_commands.append(("OT", CMD_OT))
             if self.monitor_alarms:
                 optional_commands.extend([
@@ -696,9 +728,13 @@ class AprilaireDevice:
                     continue
                 self._optional_failure_counts.pop(cmd_name, None)
                 if cmd_name == "HUM":
-                    self._state["humidity"] = self._parse_humidity(response)
+                    parsed_hum = self._parse_humidity(response)
+                    self._state["humidity"] = parsed_hum
+                    self._humidity_supported = parsed_hum is not None
                 elif cmd_name == "OT":
-                    self._state["outdoor_temperature"] = self._parse_temperature(response)
+                    parsed_ot = self._parse_temperature(response)
+                    self._state["outdoor_temperature"] = parsed_ot
+                    self._outdoor_temp_supported = parsed_ot is not None
                 elif cmd_name == "FLTALM":
                     self._state["filter_alarm"] = (response == "ON")
                 elif cmd_name == "WPALM":
@@ -897,7 +933,10 @@ class AprilaireDevice:
         if not self.available:
             return False
         
-        if self.capabilities["controller_type"] != CONTROLLER_TYPE_TEMP:
+        # v0.4.7: coerce to str defensively — older cache entries persisted
+        # this as int(0) and we'd hit a false-positive humidity-controller
+        # reject. ``str(0)`` and ``str("0")`` both equal ``"0"``.
+        if str(self.capabilities.get("controller_type", CONTROLLER_TYPE_TEMP)) != CONTROLLER_TYPE_TEMP:
             _LOGGER.error("Cannot set temperature on humidity controller")
             return False
             

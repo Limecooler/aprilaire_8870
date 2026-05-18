@@ -371,9 +371,9 @@ class AprilaireClimate(CoordinatorEntity, ClimateEntity):
         """Set new target temperature."""
         if ATTR_TEMPERATURE not in kwargs:
             return
-            
+
         temperature = kwargs[ATTR_TEMPERATURE]
-        
+
         # For cached-only state, mark operation as pending but don't actually execute
         device_data = self.coordinator.data.get(self._device_id, {})
         if device_data.get("from_cache", False) and not device_data.get("available", False):
@@ -382,23 +382,30 @@ class AprilaireClimate(CoordinatorEntity, ClimateEntity):
                 "command will be applied when device becomes available"
             )
             return
-            
+
+        # v0.4.7: only request a refresh if the underlying set actually
+        # succeeded. Previously every failed set_temperature kicked off an
+        # immediate full poll cycle of all 11 devices — a controller-type
+        # mismatch on one device caused ~30s of redundant bus traffic
+        # each time and drowned out the next user-initiated command.
         if self.hvac_mode == HVACMode.HEAT:
-            await self.coordinator.async_set_heat_setpoint(self._device_id, temperature)
+            ok = await self.coordinator.async_set_heat_setpoint(self._device_id, temperature)
         elif self.hvac_mode == HVACMode.COOL:
-            await self.coordinator.async_set_cool_setpoint(self._device_id, temperature)
+            ok = await self.coordinator.async_set_cool_setpoint(self._device_id, temperature)
         elif self.hvac_mode == HVACMode.AUTO or self.hvac_mode == HVACMode.HEAT_COOL:
             # In AUTO mode, adjust the active setpoint based on current operation
             if self.hvac_action == HVACAction.HEATING:
-                await self.coordinator.async_set_heat_setpoint(self._device_id, temperature)
+                ok = await self.coordinator.async_set_heat_setpoint(self._device_id, temperature)
             elif self.hvac_action == HVACAction.COOLING:
-                await self.coordinator.async_set_cool_setpoint(self._device_id, temperature)
+                ok = await self.coordinator.async_set_cool_setpoint(self._device_id, temperature)
             else:
                 # Default to heat setpoint if system is idle
-                await self.coordinator.async_set_heat_setpoint(self._device_id, temperature)
-                
-        # Request data update
-        await self.coordinator.async_request_refresh()
+                ok = await self.coordinator.async_set_heat_setpoint(self._device_id, temperature)
+        else:
+            ok = False
+
+        if ok:
+            await self.coordinator.async_request_refresh()
 
     async def async_set_hvac_mode(self, hvac_mode: HVACMode) -> None:
         """Set new target hvac mode."""

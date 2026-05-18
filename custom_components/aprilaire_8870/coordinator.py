@@ -670,14 +670,22 @@ class AprilaireDataUpdateCoordinator(DataUpdateCoordinator):
         # 2 × N commands per cycle on an 11-device bus. Alarms (FLTALM etc.)
         # stay per-device since the optional-skip + circuit-breaker accounting
         # is per-device-per-command.
-        # Sample any device to determine whether the integration was started
-        # with humidity/outdoor-temp monitoring on; the manager propagates the
-        # same flag to every device.
+        # v0.4.7: also skip the SN0 HUM?/OT? globals when every device has
+        # reported the firmware "no sensor wired" sentinel (``--%``/``--F``).
+        # Most buses with no outdoor sensor and no humidity sensors waste
+        # ~6 seconds per cycle on these queries; suppress them entirely
+        # once we've confirmed no device supports the reading.
         sample_dev = next(iter(self.devices.values()), None)
         if sample_dev is not None:
-            if getattr(sample_dev, "monitor_humidity", False):
+            if getattr(sample_dev, "monitor_humidity", False) and any(
+                getattr(d, "_humidity_supported", None) is not False
+                for d in self.devices.values()
+            ):
                 essentials.append(("HUM", "HUM"))
-            if getattr(sample_dev, "monitor_outdoor_temp", False):
+            if getattr(sample_dev, "monitor_outdoor_temp", False) and any(
+                getattr(d, "_outdoor_temp_supported", None) is not False
+                for d in self.devices.values()
+            ):
                 essentials.append(("OT", "OT"))
 
         # Per the 8870 programmer's manual: when responses are expected to
@@ -732,33 +740,35 @@ class AprilaireDataUpdateCoordinator(DataUpdateCoordinator):
 
         return responded
 
-    async def async_set_heat_setpoint(self, device_id: str, temperature: float) -> None:
-        """Set the heat setpoint for a device."""
+    async def async_set_heat_setpoint(self, device_id: str, temperature: float) -> bool:
+        """Set the heat setpoint for a device. Returns success."""
         if self.devices is None:
             _LOGGER.error("Device dictionary not initialized")
-            return
-            
-        device = self.devices.get(int(device_id))
-        if device:
-            await device.async_set_temperature(temperature, "HEAT")
-            # Save state after setting temperature
-            await self._async_save_state()
-        else:
-            _LOGGER.error("Device not found: %s", device_id)
+            return False
 
-    async def async_set_cool_setpoint(self, device_id: str, temperature: float) -> None:
-        """Set the cool setpoint for a device."""
+        device = self.devices.get(int(device_id))
+        if not device:
+            _LOGGER.error("Device not found: %s", device_id)
+            return False
+        ok = await device.async_set_temperature(temperature, "HEAT")
+        if ok:
+            await self._async_save_state()
+        return bool(ok)
+
+    async def async_set_cool_setpoint(self, device_id: str, temperature: float) -> bool:
+        """Set the cool setpoint for a device. Returns success."""
         if self.devices is None:
             _LOGGER.error("Device dictionary not initialized")
-            return
-            
+            return False
+
         device = self.devices.get(int(device_id))
-        if device:
-            await device.async_set_temperature(temperature, "COOL")
-            # Save state after setting temperature
-            await self._async_save_state()
-        else:
+        if not device:
             _LOGGER.error("Device not found: %s", device_id)
+            return False
+        ok = await device.async_set_temperature(temperature, "COOL")
+        if ok:
+            await self._async_save_state()
+        return bool(ok)
 
     async def async_set_hvac_mode(self, device_id: str, mode: str) -> None:
         """Set the HVAC mode for a device."""

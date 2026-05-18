@@ -574,6 +574,41 @@ def test_parse_controller_type_garbage() -> None:
     dev._parse_controller_type("CT=NOTAINT")  # int() raises → swallowed
 
 
+def test_hydrate_from_capability_cache_normalizes_int_controller_type() -> None:
+    """v0.4.7 regression: capability caches persisted by v0.4.5 and
+    earlier stored ``controller_type`` as the int 0. Loading them
+    back into a string-typed field caused
+    ``"Cannot set temperature on humidity controller"`` to fire on
+    every set_temperature call even after the user upgraded to v0.4.6.
+    The loader now coerces non-str values to str.
+    """
+    dev, _, _ = make_device()
+    dev.model = "8870"
+    dev.firmware_version = "1.0"
+    # Simulate a coordinator that returns a stale-cache entry with int 0
+    # (the v0.4.5 persistence format).
+    dev.coordinator.config_entry_id = "entryA"
+    dev.coordinator.get_cached_capabilities = MagicMock(return_value={
+        "model": "8870",
+        "firmware_version": "1.0",
+        "capabilities": {
+            "controller_type": 0,  # the buggy int form
+            "equipment_type": "1",
+            "is_heat_pump": False,
+            "stages_heat": 1,
+            "stages_cool": 1,
+            "has_emergency_heat": False,
+            "has_humidifier": False,
+            "has_dehumidifier": False,
+            "support_modules": [],
+        },
+    })
+    assert dev._try_hydrate_from_capability_cache() is True
+    # Coerced to string on load.
+    assert dev.capabilities["controller_type"] == "0"
+    assert isinstance(dev.capabilities["controller_type"], str)
+
+
 # ---- _parse_support_modules -------------------------------------------------
 
 
