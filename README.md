@@ -247,6 +247,17 @@ Manufacturer documentation — useful for wiring questions, network addressing, 
 - [Aprilaire Whole System Installation Guide (PDF)](https://www.homecontrols.com/homecontrols/products/pdfs/RP-AprilAire/Aprilaire_Whole_System_Installation.pdf) — RS-485 network topology, wiring, multi-thermostat addressing.
 - [Aprilaire 8870 Thermostat Owner's Manual (PDF)](https://www.aprilaire.com/docs/default-source/product-owners-manuals/Thermostat/aprilaire-thermostat-model-8870-owners-manual-obs.pdf?sfvrsn=6) — thermostat configuration, on-device menus, and the network address setting referenced in the troubleshooting section above.
 
+### Local docs
+
+The [`docs/`](docs/) folder mirrors the manufacturer references the integration was developed against. These are the authoritative source for protocol behavior (TDMA timing, SN0 globals, COS flags, the TIME/DATE/PMES/lockout command set, etc.):
+
+- [`aprilaire_programmers_manual_8870_system_dp10005756.doc`](docs/aprilaire_programmers_manual_8870_system_dp10005756.doc) — **8870-specific** programmer's manual (DP 10005756). Primary reference for the StatNet command set: TEMP/MODE/FAN/HVAC/HOLD/SH/SC essentials, COS flags (C1–C8), CR=NORMAL, TIME=HHMM, DATE=MMDDYY, PMES1–4 / TMPMES messaging, BLTON, FLTALM, lockouts (FANLK/MODELK/UPDNLK/NETLK/LKTIME/LKLIMIT), and the SN0 global broadcast address.
+- [`Aprilaire 8800 Programmers Manual.pdf`](docs/Aprilaire%208800%20Programmers%20Manual.pdf) — older 8800-series programmer's manual. Same protocol family; useful for cross-checking commands that aren't documented in the 8870 manual.
+- [`Aprilaire_Whole_System_Installation-1.pdf`](docs/Aprilaire_Whole_System_Installation-1.pdf) — full system installer guide: RS-485 wiring, termination, address dipswitches, and the 265ms × N (default 32) TDMA response window assumption the coordinator's bulk-poll timeout is sized for.
+- [`aprilaire-8870-communicating-thermostat-owners-manual-B2202659.pdf`](docs/aprilaire-8870-communicating-thermostat-owners-manual-B2202659.pdf) / [`-B2202659B.pdf`](docs/aprilaire-8870-communicating-thermostat-owners-manual-B2202659B.pdf) — end-user owner's manuals (two revisions); on-device menu navigation, mode/fan/hold semantics as the user sees them.
+- [`aprilaire-8870-communicating-thermostat-specification-sheet-4047.pdf`](docs/aprilaire-8870-communicating-thermostat-specification-sheet-4047.pdf) — specification sheet: supported HVAC equipment topologies (heat pump O/B reversing valve, two-stage heat/cool, etc.), sensor accuracy.
+- [`aprilaire-8870-communicating-thermostat-submittal-sheet-4061.pdf`](docs/aprilaire-8870-communicating-thermostat-submittal-sheet-4061.pdf) — submittal sheet: dimensions, electrical specs, terminal designations.
+
 ## Support
 
 If you need assistance:

@@ -36,9 +36,6 @@ from .const import (
     MODE_COOL,
     MODE_AUTO,
     MODE_EMHT,
-    FAN_AUTO,
-    FAN_ON,
-    FAN_CIRC,
     CONTROLLER_TYPE_TEMP,
     CONTROLLER_TYPE_HUMID,
     DEFAULT_COS_FLAGS,
@@ -961,7 +958,9 @@ class AprilaireDevice:
         if not self.available:
             return False
             
-        # Map Home Assistant HVAC modes to Aprilaire modes
+        # Map HA HVAC modes AND already-wire-format values to Aprilaire wire
+        # modes. v0.4.2: case-insensitive to match the fan_mode fix — both
+        # "heat" (HA enum) and "HEAT" (wire format) route to MODE_HEAT.
         mode_map = {
             "off": MODE_OFF,
             "heat": MODE_HEAT,
@@ -969,9 +968,10 @@ class AprilaireDevice:
             "auto": MODE_AUTO,
             "heat_cool": MODE_AUTO,
             "emergency_heat": MODE_EMHT,
+            "emht": MODE_EMHT,
         }
-        
-        mode = mode_map.get(hvac_mode)
+
+        mode = mode_map.get((hvac_mode or "").lower())
         if not mode:
             _LOGGER.error("Invalid HVAC mode: %s", hvac_mode)
             return False
@@ -991,34 +991,44 @@ class AprilaireDevice:
 
     async def async_set_fan_mode(self, fan_mode: str) -> bool:
         """Set the fan mode on the thermostat.
-        
-        Args:
-            fan_mode: The fan mode to set
-            
-        Returns:
-            True if the fan mode was set successfully, False otherwise
+
+        Accepts either HA fan-mode constants (``"auto"``, ``"on"``,
+        ``"circulate"``) or Aprilaire wire values (``"AUTO"``, ``"ON"``,
+        ``"CIRC"``). Case-insensitive: a switch entity calling with
+        ``"ON"`` and the climate entity calling with ``"on"`` both work.
+
+        v0.4.2 bug fix: the previous case-sensitive lowercase-only map
+        silently rejected every call from the fan-override switch
+        (``switch.py`` passes uppercase ``"ON"``/``"AUTO"``), and the
+        climate path stored an HA-format string in ``_state`` that didn't
+        match wire-format echoes from bulk polling.
         """
         if not self.available:
             return False
-            
-        # Map Home Assistant fan modes to Aprilaire fan modes
-        mode_map = {
-            "auto": FAN_AUTO,
-            "on": FAN_ON,
-            "circulate": FAN_CIRC,
+
+        # Accept any case + both HA-format and wire-format inputs, normalize
+        # to the uppercase Aprilaire wire value.
+        normalized_map = {
+            "auto": "AUTO",
+            "on": "ON",
+            "circulate": "CIRC",
+            "circ": "CIRC",
         }
-        
-        mode = mode_map.get(fan_mode)
-        if not mode:
+        wire_value = normalized_map.get((fan_mode or "").lower())
+        if wire_value is None:
             _LOGGER.error("Invalid fan mode: %s", fan_mode)
             return False
-            
-        # Send the command to set the fan mode
-        result = await self.protocol.execute_assignment_command(self.address, CMD_FAN, mode)
+
+        result = await self.protocol.execute_assignment_command(
+            self.address, CMD_FAN, wire_value
+        )
         if result:
-            self._state["fan_mode"] = mode
+            # Store the wire value so subsequent bulk-poll echoes match
+            # and switch.is_on (which compares against "ON") sees the
+            # change immediately.
+            self._state["fan_mode"] = wire_value
             return True
-            
+
         return False
 
     async def async_set_hold(self, hold_status: bool) -> bool:

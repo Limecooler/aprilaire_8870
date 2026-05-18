@@ -911,6 +911,29 @@ async def test_set_hvac_mode_send_fails() -> None:
     assert await dev.async_set_hvac_mode("heat") is False
 
 
+async def test_set_hvac_mode_accepts_uppercase_wire_format() -> None:
+    """v0.4.2: case-insensitive — both 'heat' (HA) and 'HEAT' (wire) work.
+
+    Same robustness as the fan_mode fix; protects future direct callers
+    from the same silent-failure mode the fan-override switch hit.
+    """
+    dev, conn, _ = make_device()
+    dev.available = True
+    conn.responses["SN1 MODE=HEAT"] = "SN1 MODE=HEAT"
+    assert await dev.async_set_hvac_mode("HEAT") is True
+    assert dev._state["mode"] == "HEAT"
+
+
+async def test_set_hvac_mode_accepts_emht_alias() -> None:
+    """Both 'emergency_heat' (HA) and 'EMHT' (wire) map to MODE_EMHT."""
+    dev, conn, _ = make_device()
+    dev.available = True
+    dev.capabilities["has_emergency_heat"] = True
+    conn.responses["SN1 MODE=EMHT"] = "SN1 MODE=EMHT"
+    assert await dev.async_set_hvac_mode("EMHT") is True
+    assert dev._state["mode"] == "EMHT"
+
+
 # ---- async_set_fan_mode ----------------------------------------------------
 
 
@@ -927,16 +950,50 @@ async def test_set_fan_mode_unknown() -> None:
 
 
 async def test_set_fan_mode_success() -> None:
+    """Lowercase HA-style input works and the wire value is uppercase."""
     dev, conn, _ = make_device()
     dev.available = True
-    conn.responses["SN1 FAN=auto"] = "SN1 FAN=auto"
+    conn.responses["SN1 FAN=AUTO"] = "SN1 FAN=AUTO"
     assert await dev.async_set_fan_mode("auto") is True
+    # State is normalized to wire-format uppercase, matching bulk-poll echoes.
+    assert dev._state["fan_mode"] == "AUTO"
+    # Wire command used uppercase.
+    assert any("FAN=AUTO" in c for c in conn.sent)
 
 
 async def test_set_fan_mode_send_fails() -> None:
     dev, _, _ = make_device()
     dev.available = True
     assert await dev.async_set_fan_mode("auto") is False
+
+
+async def test_set_fan_mode_accepts_uppercase_from_switch() -> None:
+    """Regression: the fan-override switch passes uppercase 'ON'/'AUTO'.
+
+    Before v0.4.2 the lowercase-only mode_map silently rejected these
+    and returned False without sending anything to the thermostat.
+    """
+    dev, conn, _ = make_device()
+    dev.available = True
+    conn.responses["SN1 FAN=ON"] = "SN1 FAN=ON"
+    assert await dev.async_set_fan_mode("ON") is True
+    assert dev._state["fan_mode"] == "ON"
+    assert any("FAN=ON" in c for c in conn.sent)
+
+
+async def test_set_fan_mode_circulate_both_aliases() -> None:
+    """Both HA 'circulate' and wire 'CIRC' map to FAN=CIRC."""
+    dev, conn, _ = make_device()
+    dev.available = True
+    conn.responses["SN1 FAN=CIRC"] = "SN1 FAN=CIRC"
+    assert await dev.async_set_fan_mode("circulate") is True
+    assert dev._state["fan_mode"] == "CIRC"
+
+    dev2, conn2, _ = make_device()
+    dev2.available = True
+    conn2.responses["SN1 FAN=CIRC"] = "SN1 FAN=CIRC"
+    assert await dev2.async_set_fan_mode("CIRC") is True
+    assert dev2._state["fan_mode"] == "CIRC"
 
 
 # ---- async_set_hold ---------------------------------------------------------

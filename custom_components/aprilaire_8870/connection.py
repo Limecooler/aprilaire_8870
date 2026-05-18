@@ -45,7 +45,11 @@ _ADDRESS_RE = re.compile(r"^SN(\d+)")
 
 # Parse a command being sent to extract its addressed target and the request
 # code, e.g. ``SN3 TEMP?`` → (3, "TEMP"), ``SN1 CR=NORMAL`` → (1, "CR").
-_COMMAND_RE = re.compile(r"^SN(\d+)\s+([A-Z][A-Z0-9]*)")
+# Case-insensitive: COS-flag codes (c1..c8) are conventionally written lowercase
+# by callers even though the wire format is uppercase. v0.4.2 fix — previously
+# the lowercase form fell through to the send-only branch with no response
+# future, silently breaking COS verification and per-flag enable.
+_COMMAND_RE = re.compile(r"^SN(\d+)\s+([A-Za-z][A-Za-z0-9]*)")
 
 
 class AprilaireConnectionBase(ABC):

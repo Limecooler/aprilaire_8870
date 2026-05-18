@@ -471,6 +471,29 @@ async def test_send_with_response_no_device_id(hass) -> None:
     assert result is None
 
 
+async def test_send_with_response_lowercase_command_code(hass) -> None:
+    """v0.4.2 regression: lowercase COS flag codes (c1..c8) must register a
+    response future, not fall through to send-only.
+
+    Before the regex was case-insensitive, ``SN1 c8?`` extracted no command
+    code, the path took the send-only branch with no future, and COS
+    verification/enable always reported failure.
+    """
+    conn = _make_serial_conn(hass)
+    conn._state = STATE_CONNECTED
+    conn._writer = _FakeWriter()
+
+    async def deliver() -> None:
+        await asyncio.sleep(0.05)
+        # Firmware echoes uppercase regardless of request case.
+        conn._received_messages.append("SN1 C8=ON")
+        conn._try_resolve_pending("SN1 C8=ON")
+
+    asyncio.create_task(deliver())
+    result = await conn.async_send_command_with_response("SN1 c8?", timeout=1.0)
+    assert result == "SN1 C8=ON"
+
+
 async def test_send_with_response_no_message(hass) -> None:
     conn = _make_serial_conn(hass)
     conn._state = STATE_CONNECTED

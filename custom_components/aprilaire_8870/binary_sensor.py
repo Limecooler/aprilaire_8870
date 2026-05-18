@@ -184,11 +184,11 @@ class AprilaireHeatingStatusSensor(AprilaireBinarySensor):
     @property
     def is_on(self) -> bool:
         """Return true if heating is active."""
-        if not self.coordinator.data.get(self._device.device_id):
+        if not self.coordinator.data.get(self._device_id):
             return False
         
         # Check W1 (first stage heat) and W2 (second stage heat) relay status
-        hvac_status = self.coordinator.data[self._device.device_id].get("hvac_status", "")
+        hvac_status = self.coordinator.data[self._device_id].get("hvac_status", "")
         return '+' in hvac_status[HVAC_RELAY_INDICES["W1"]] or '+' in hvac_status[HVAC_RELAY_INDICES["W2"]]
 
 
@@ -208,11 +208,11 @@ class AprilaireCoolingStatusSensor(AprilaireBinarySensor):
     @property
     def is_on(self) -> bool:
         """Return true if cooling is active."""
-        if not self.coordinator.data.get(self._device.device_id):
+        if not self.coordinator.data.get(self._device_id):
             return False
         
         # Check Y1 (first stage cool) and Y2 (second stage cool) relay status
-        hvac_status = self.coordinator.data[self._device.device_id].get("hvac_status", "")
+        hvac_status = self.coordinator.data[self._device_id].get("hvac_status", "")
         return '+' in hvac_status[HVAC_RELAY_INDICES["Y1"]] or '+' in hvac_status[HVAC_RELAY_INDICES["Y2"]]
 
 
@@ -232,11 +232,11 @@ class AprilaireFanStatusSensor(AprilaireBinarySensor):
     @property
     def is_on(self) -> bool:
         """Return true if fan is running."""
-        if not self.coordinator.data.get(self._device.device_id):
+        if not self.coordinator.data.get(self._device_id):
             return False
         
         # Check G (fan) relay status
-        hvac_status = self.coordinator.data[self._device.device_id].get("hvac_status", "")
+        hvac_status = self.coordinator.data[self._device_id].get("hvac_status", "")
         return '+' in hvac_status[HVAC_RELAY_INDICES["G"]]
 
 
@@ -256,12 +256,12 @@ class AprilaireEmergencyHeatStatusSensor(AprilaireBinarySensor):
     @property
     def is_on(self) -> bool:
         """Return true if emergency heat is active."""
-        if not self.coordinator.data.get(self._device.device_id):
+        if not self.coordinator.data.get(self._device_id):
             return False
         
         # Emergency heat is determined by the mode being EMHT and aux heat (W1/W2) being on
-        mode = self.coordinator.data[self._device.device_id].get("mode", "")
-        hvac_status = self.coordinator.data[self._device.device_id].get("hvac_status", "")
+        mode = self.coordinator.data[self._device_id].get("mode", "")
+        hvac_status = self.coordinator.data[self._device_id].get("hvac_status", "")
         
         return (
             mode == "EMHT" and 
@@ -286,10 +286,12 @@ class AprilaireFilterStatusSensor(AprilaireBinarySensor):
     @property
     def is_on(self) -> bool:
         """Return true if filter needs attention."""
-        if not self.coordinator.data.get(self._device.device_id):
+        if not self.coordinator.data.get(self._device_id):
             return False
-        
-        return self.coordinator.data[self._device.device_id].get("filter_alarm", "OFF") == "ON"
+
+        # device.py stores filter_alarm as a bool (FLTALM=ON/OFF parsing).
+        # v0.4.2 fix: was comparing to the string "ON" — always False.
+        return bool(self.coordinator.data[self._device_id].get("filter_alarm"))
 
 
 class AprilaireSystemErrorStatusSensor(AprilaireBinarySensor):
@@ -309,21 +311,25 @@ class AprilaireSystemErrorStatusSensor(AprilaireBinarySensor):
     @property
     def is_on(self) -> bool:
         """Return true if system has an error."""
-        if not self.coordinator.data.get(self._device.device_id):
+        if not self.coordinator.data.get(self._device_id):
             return False
-        
-        # If any of the error codes are non-zero, there's an error
-        error_status = self.coordinator.data[self._device.device_id].get("error", "000000")
+
+        # v0.4.2 fix: was reading "error"; coordinator stores it as
+        # "error_status" (device.py:297). Always reported no-error before.
+        error_status = self.coordinator.data[self._device_id].get("error_status", "000000")
         return error_status != "000000"
 
     @property
     def extra_state_attributes(self) -> Dict[str, Any]:
         """Return additional attributes about the error."""
-        if not self.coordinator.data.get(self._device.device_id):
+        if not self.coordinator.data.get(self._device_id):
             return {}
-        
-        error_status = self.coordinator.data[self._device.device_id].get("error", "000000")
-        
+
+        error_status = self.coordinator.data[self._device_id].get("error_status", "000000")
+        # Pad/truncate defensively — firmware nominally returns 6 chars
+        # (one digit per subsystem) but absent/empty values would IndexError.
+        error_status = (error_status or "000000").ljust(6, "0")[:6]
+
         # Decode error status into component errors
         error_types = {
             "temperature_sensor": error_status[0],
@@ -333,7 +339,7 @@ class AprilaireSystemErrorStatusSensor(AprilaireBinarySensor):
             "communication": error_status[4],
             "eeprom": error_status[5],
         }
-        
+
         return error_types
 
 
@@ -353,8 +359,10 @@ class AprilaireNetworkOverrideStatusSensor(AprilaireBinarySensor):
     @property
     def is_on(self) -> bool:
         """Return true if network override is active."""
-        if not self.coordinator.data.get(self._device.device_id):
+        if not self.coordinator.data.get(self._device_id):
             return False
-        
-        return self.coordinator.data[self._device.device_id].get("hold", "OFF") == "ON"
+
+        # v0.4.2 fix: was reading "hold"; coordinator stores "hold_status"
+        # (device.py:296). Always reported off before.
+        return self.coordinator.data[self._device_id].get("hold_status", "OFF") == "ON"
 

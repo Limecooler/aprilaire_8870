@@ -334,9 +334,17 @@ def test_binary_sensor_emergency_heat_no_data() -> None:
 
 
 def test_binary_sensor_filter_on() -> None:
-    coord = make_coordinator(data=_bs_data(filter_alarm="ON"))
+    # device.py stores filter_alarm as bool (FLTALM=ON → True).
+    coord = make_coordinator(data=_bs_data(filter_alarm=True))
     s = bs.AprilaireFilterStatusSensor(coord, make_device(1))
     assert s.is_on is True
+
+
+def test_binary_sensor_filter_off_is_off() -> None:
+    """Regression: bool(False) must be False, not truthy."""
+    coord = make_coordinator(data=_bs_data(filter_alarm=False))
+    s = bs.AprilaireFilterStatusSensor(coord, make_device(1))
+    assert s.is_on is False
 
 
 def test_binary_sensor_filter_no_data() -> None:
@@ -346,7 +354,8 @@ def test_binary_sensor_filter_no_data() -> None:
 
 
 def test_binary_sensor_system_error_present() -> None:
-    coord = make_coordinator(data=_bs_data(error="120000"))
+    # Coordinator stores under "error_status" (matches device.py).
+    coord = make_coordinator(data=_bs_data(error_status="120000"))
     s = bs.AprilaireSystemErrorStatusSensor(coord, make_device(1))
     assert s.is_on is True
     attrs = s.extra_state_attributes
@@ -355,7 +364,7 @@ def test_binary_sensor_system_error_present() -> None:
 
 
 def test_binary_sensor_system_error_absent() -> None:
-    coord = make_coordinator(data=_bs_data(error="000000"))
+    coord = make_coordinator(data=_bs_data(error_status="000000"))
     s = bs.AprilaireSystemErrorStatusSensor(coord, make_device(1))
     assert s.is_on is False
 
@@ -367,8 +376,17 @@ def test_binary_sensor_system_error_no_data() -> None:
     assert s.extra_state_attributes == {}
 
 
+def test_binary_sensor_system_error_short_string_no_indexerror() -> None:
+    """Defensive: short/empty error_status must not IndexError on subscripts."""
+    coord = make_coordinator(data=_bs_data(error_status=""))
+    s = bs.AprilaireSystemErrorStatusSensor(coord, make_device(1))
+    attrs = s.extra_state_attributes
+    assert attrs["eeprom"] == "0"
+
+
 def test_binary_sensor_network_override_on() -> None:
-    coord = make_coordinator(data=_bs_data(hold="ON"))
+    # Coordinator stores under "hold_status" (matches device.py).
+    coord = make_coordinator(data=_bs_data(hold_status="ON"))
     s = bs.AprilaireNetworkOverrideStatusSensor(coord, make_device(1))
     assert s.is_on is True
 
