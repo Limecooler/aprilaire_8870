@@ -21,6 +21,7 @@ from homeassistant.const import (
     UnitOfTemperature,
 )
 from homeassistant.core import HomeAssistant, callback
+from homeassistant.helpers.dispatcher import async_dispatcher_connect
 from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import (
@@ -38,6 +39,11 @@ from .const import (
     HA_TO_APRILAIRE_HVAC_MODE,
     FAN_MODE_APRILAIRE_TO_HA,
     HA_TO_APRILAIRE_FAN_MODE,
+    SERVICE_SIGNAL_SET_TEXT_MESSAGE,
+    SERVICE_SIGNAL_SET_BACKLIGHT,
+    SERVICE_SIGNAL_RESET_FILTER,
+    SERVICE_SIGNAL_SET_LOCKOUT,
+    SERVICE_SIGNAL_CONFIGURE_COS,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -294,6 +300,72 @@ class AprilaireClimate(CoordinatorEntity, ClimateEntity):
             attrs["from_cache"] = True
             
         return attrs
+
+    async def async_added_to_hass(self) -> None:
+        """Subscribe to per-entity service-dispatcher signals.
+
+        v0.4.0: services in services.py have been dispatching per-entity
+        signals (``f"{SIGNAL}_{entity_id}"``) since v0.2.0 with no
+        subscriber on the entity side — every service call silently
+        no-op'd. This wires the climate entity up to actually receive
+        and execute the dispatched commands.
+        """
+        await super().async_added_to_hass()
+
+        @callback
+        def _handle_set_text_message(message: str, message_type: str) -> None:
+            self.hass.async_create_task(
+                self._device.async_set_text_message(message, message_type)
+            )
+
+        @callback
+        def _handle_set_backlight(state: bool, duration: Optional[int]) -> None:
+            # BLTON has no off/duration parameters per the protocol;
+            # state=False is a no-op.
+            if state is False:
+                return
+            self.hass.async_create_task(self._device.async_set_backlight())
+
+        @callback
+        def _handle_reset_filter() -> None:
+            self.hass.async_create_task(self._device.async_reset_filter())
+
+        @callback
+        def _handle_set_lockout(
+            fan_lockout: Optional[int],
+            mode_lockout: Optional[int],
+            setpoint_lockout: Optional[int],
+            network_lockout: Optional[int],
+            lockout_time: Optional[int],
+            lockout_limit: Optional[int],
+        ) -> None:
+            self.hass.async_create_task(
+                self._device.async_set_lockout(
+                    fan_lockout=fan_lockout,
+                    mode_lockout=mode_lockout,
+                    setpoint_lockout=setpoint_lockout,
+                    network_lockout=network_lockout,
+                    lockout_time=lockout_time,
+                    lockout_limit=lockout_limit,
+                )
+            )
+
+        @callback
+        def _handle_configure_cos(cos_flags: List[str]) -> None:
+            self.hass.async_create_task(self._device.async_configure_cos(cos_flags))
+
+        for signal, handler in (
+            (SERVICE_SIGNAL_SET_TEXT_MESSAGE, _handle_set_text_message),
+            (SERVICE_SIGNAL_SET_BACKLIGHT, _handle_set_backlight),
+            (SERVICE_SIGNAL_RESET_FILTER, _handle_reset_filter),
+            (SERVICE_SIGNAL_SET_LOCKOUT, _handle_set_lockout),
+            (SERVICE_SIGNAL_CONFIGURE_COS, _handle_configure_cos),
+        ):
+            self.async_on_remove(
+                async_dispatcher_connect(
+                    self.hass, f"{signal}_{self.entity_id}", handler,
+                )
+            )
 
     async def async_set_temperature(self, **kwargs) -> None:
         """Set new target temperature."""

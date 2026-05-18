@@ -355,3 +355,90 @@ def test_climate_setup_entry_creates_entities(hass) -> None:
         climate_mod.async_setup_entry(hass, entry, fake_add)
     )
     assert len(added) == 2  # one initialized, one placeholder
+
+
+# ---- service-dispatcher wiring (v0.4.0) ------------------------------------
+
+
+async def test_async_added_to_hass_subscribes_to_all_service_signals(hass) -> None:
+    """v0.4.0 service-wiring fix: climate entity subscribes to per-entity
+    dispatcher signals so the previously no-op services actually fire."""
+    from custom_components.aprilaire_8870.const import (
+        SERVICE_SIGNAL_SET_TEXT_MESSAGE,
+        SERVICE_SIGNAL_SET_BACKLIGHT,
+        SERVICE_SIGNAL_RESET_FILTER,
+        SERVICE_SIGNAL_SET_LOCKOUT,
+        SERVICE_SIGNAL_CONFIGURE_COS,
+    )
+    from homeassistant.helpers.dispatcher import async_dispatcher_send
+
+    dev = make_device(address=5)
+    dev.async_set_text_message = AsyncMock(return_value=True)
+    dev.async_set_backlight = AsyncMock(return_value=True)
+    dev.async_reset_filter = AsyncMock(return_value=True)
+    dev.async_set_lockout = AsyncMock(return_value=True)
+    dev.async_configure_cos = AsyncMock(return_value=True)
+    coord = make_coordinator(data={"5": {"available": True}})
+    entity = climate_mod.AprilaireClimate(coord, dev)
+    entity.hass = hass
+    entity.platform = MagicMock()
+    entity.entity_id = "climate.aprilaire_5"
+    await entity.async_added_to_hass()
+
+    async_dispatcher_send(
+        hass,
+        f"{SERVICE_SIGNAL_SET_TEXT_MESSAGE}_climate.aprilaire_5",
+        "Hello", "tmpmes",
+    )
+    await hass.async_block_till_done()
+    dev.async_set_text_message.assert_called_once_with("Hello", "tmpmes")
+
+    async_dispatcher_send(
+        hass, f"{SERVICE_SIGNAL_SET_BACKLIGHT}_climate.aprilaire_5", True, 30,
+    )
+    await hass.async_block_till_done()
+    dev.async_set_backlight.assert_called_once()
+
+    async_dispatcher_send(
+        hass, f"{SERVICE_SIGNAL_RESET_FILTER}_climate.aprilaire_5",
+    )
+    await hass.async_block_till_done()
+    dev.async_reset_filter.assert_called_once()
+
+    async_dispatcher_send(
+        hass, f"{SERVICE_SIGNAL_SET_LOCKOUT}_climate.aprilaire_5",
+        0, 1, 2, 1, 30, 5,
+    )
+    await hass.async_block_till_done()
+    dev.async_set_lockout.assert_called_once_with(
+        fan_lockout=0, mode_lockout=1, setpoint_lockout=2,
+        network_lockout=1, lockout_time=30, lockout_limit=5,
+    )
+
+    async_dispatcher_send(
+        hass, f"{SERVICE_SIGNAL_CONFIGURE_COS}_climate.aprilaire_5",
+        ["c1", "c2"],
+    )
+    await hass.async_block_till_done()
+    dev.async_configure_cos.assert_called_once_with(["c1", "c2"])
+
+
+async def test_set_backlight_state_false_is_noop(hass) -> None:
+    """BLTON has no off command; state=False shouldn't fire the device method."""
+    from custom_components.aprilaire_8870.const import SERVICE_SIGNAL_SET_BACKLIGHT
+    from homeassistant.helpers.dispatcher import async_dispatcher_send
+
+    dev = make_device(address=5)
+    dev.async_set_backlight = AsyncMock(return_value=True)
+    coord = make_coordinator(data={"5": {"available": True}})
+    entity = climate_mod.AprilaireClimate(coord, dev)
+    entity.hass = hass
+    entity.platform = MagicMock()
+    entity.entity_id = "climate.aprilaire_5"
+    await entity.async_added_to_hass()
+
+    async_dispatcher_send(
+        hass, f"{SERVICE_SIGNAL_SET_BACKLIGHT}_climate.aprilaire_5", False, None,
+    )
+    await hass.async_block_till_done()
+    dev.async_set_backlight.assert_not_called()

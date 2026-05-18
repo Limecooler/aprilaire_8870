@@ -962,6 +962,117 @@ async def test_set_hold_off_send_fails() -> None:
     assert await dev.async_set_hold(False) is False
 
 
+# ---- service-backed device methods (v0.4.0) --------------------------------
+
+
+async def test_set_text_message_tmpmes_writes_TMPMES_command() -> None:
+    dev, conn, _ = make_device(3)
+    dev.available = True
+    conn.responses["SN3 TMPMES=Hello"] = "SN3 TMPMES=Hello"
+    ok = await dev.async_set_text_message("Hello", "tmpmes")
+    assert ok is True
+    assert any("TMPMES=Hello" in s for s in conn.sent)
+
+
+async def test_set_text_message_pmes1_writes_PMES1_command() -> None:
+    dev, conn, _ = make_device(3)
+    dev.available = True
+    conn.responses["SN3 PMES1=Welcome home"] = "SN3 PMES1=Welcome home"
+    ok = await dev.async_set_text_message("Welcome home", "pmes1")
+    assert ok is True
+    assert any("PMES1=Welcome home" in s for s in conn.sent)
+
+
+async def test_set_text_message_truncates_at_31_chars() -> None:
+    dev, conn, _ = make_device(3)
+    dev.available = True
+    long_text = "X" * 40
+    conn.responses[f"SN3 TMPMES={'X' * 31}"] = f"SN3 TMPMES={'X' * 31}"
+    await dev.async_set_text_message(long_text, "tmpmes")
+    # Sent command contains exactly 31 X's, not 40.
+    payload = next(s for s in conn.sent if "TMPMES" in s)
+    assert "X" * 31 in payload
+    assert "X" * 32 not in payload
+
+
+async def test_set_text_message_unknown_type_returns_false() -> None:
+    dev, _, _ = make_device(3)
+    dev.available = True
+    assert await dev.async_set_text_message("hi", "nonsense") is False
+
+
+async def test_set_text_message_unavailable_returns_false() -> None:
+    dev, _, _ = make_device(3)
+    dev.available = False
+    assert await dev.async_set_text_message("hi", "tmpmes") is False
+
+
+async def test_set_backlight_sends_BLTON() -> None:
+    dev, conn, _ = make_device(3)
+    dev.available = True
+    conn.responses["SN3 BLTON"] = "SN3 BLTON"
+    with patch("custom_components.aprilaire_8870.device.asyncio.sleep", new=AsyncMock()):
+        ok = await dev.async_set_backlight()
+    assert ok is True
+    assert any("BLTON" in s for s in conn.sent)
+
+
+async def test_reset_filter_sends_FLTALM_OFF() -> None:
+    dev, conn, _ = make_device(3)
+    dev.available = True
+    conn.responses["SN3 FLTALM=OFF"] = "SN3 FLTALM=OFF"
+    dev._state["filter_alarm"] = True
+    ok = await dev.async_reset_filter()
+    assert ok is True
+    assert dev._state["filter_alarm"] is False
+    assert any("FLTALM=OFF" in s for s in conn.sent)
+
+
+async def test_set_lockout_sends_all_provided_commands() -> None:
+    dev, conn, _ = make_device(3)
+    dev.available = True
+    for cmd in ("FANLK=0", "MODELK=1", "UPDNLK=2", "NETLK=1", "LKTIME=30", "LKLIMIT=5"):
+        conn.responses[f"SN3 {cmd}"] = f"SN3 {cmd}"
+    ok = await dev.async_set_lockout(
+        fan_lockout=0, mode_lockout=1, setpoint_lockout=2,
+        network_lockout=1, lockout_time=30, lockout_limit=5,
+    )
+    assert ok is True
+    # All six commands hit the wire.
+    for cmd in ("FANLK=0", "MODELK=1", "UPDNLK=2", "NETLK=1", "LKTIME=30", "LKLIMIT=5"):
+        assert any(cmd in s for s in conn.sent), f"Missing {cmd}"
+
+
+async def test_set_lockout_skips_none_fields() -> None:
+    dev, conn, _ = make_device(3)
+    dev.available = True
+    conn.responses["SN3 FANLK=0"] = "SN3 FANLK=0"
+    # Only fan_lockout set; everything else None — no other commands sent.
+    ok = await dev.async_set_lockout(fan_lockout=0)
+    assert ok is True
+    sent_cmds = [s for s in conn.sent if any(c in s for c in (
+        "MODELK", "UPDNLK", "NETLK", "LKTIME", "LKLIMIT",
+    ))]
+    assert sent_cmds == []
+
+
+async def test_set_lockout_unavailable_returns_false() -> None:
+    dev, _, _ = make_device(3)
+    dev.available = False
+    assert await dev.async_set_lockout(fan_lockout=0) is False
+
+
+async def test_configure_cos_delegates_to_async_enable_cos() -> None:
+    dev, _, _ = make_device(3)
+    dev.available = True
+    dev.async_enable_cos = AsyncMock(return_value=True)
+    ok = await dev.async_configure_cos(["c1", "c2"])
+    assert ok is True
+    dev.async_enable_cos.assert_called_once()
+    # Flags passed through as a set.
+    assert dev.async_enable_cos.call_args.kwargs["flags"] == {"c1", "c2"}
+
+
 # ---- process_cos_message ----------------------------------------------------
 
 

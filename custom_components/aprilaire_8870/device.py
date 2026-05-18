@@ -1005,23 +1005,144 @@ class AprilaireDevice:
 
     async def async_set_hold(self, hold_status: bool) -> bool:
         """Set the hold status (network override) on the thermostat.
-        
+
         Args:
             hold_status: True to enable hold, False to disable
-            
+
         Returns:
             True if the hold status was set successfully, False otherwise
         """
         if not self.available:
             return False
-            
+
         value = "ON" if hold_status else "OFF"
         result = await self.protocol.execute_assignment_command(self.address, CMD_HOLD, value)
         if result:
             self._state["hold_status"] = value
             return True
-            
+
         return False
+
+    # v0.4.0: actual protocol implementations for the services that have been
+    # registered (and dispatching signals) since v0.2.0 but had no subscriber
+    # on the entity side. Climate entity now subscribes in async_added_to_hass
+    # and routes to these methods.
+
+    async def async_set_text_message(self, text: str, message_type: str) -> bool:
+        """Write a text message to the thermostat's display.
+
+        ``message_type`` is one of: ``pmes1``..``pmes4`` (rotating permanent
+        messages displayed for ~2-5s each) or ``tmpmes`` (temporary "user
+        reset" message that flashes the backlight 10× and persists until
+        the ENTER button is pressed).
+
+        Maps to PMES1/PMES2/PMES3/PMES4/TMPMES commands per the
+        programmer's manual. Text is truncated to 31 chars to fit the
+        two-line display (16 + 15 chars per 8800 docs; 32 per 8870 docs —
+        31 is the safe intersection).
+        """
+        if not self.available:
+            return False
+        if text is None:
+            text = ""
+        # Trim — display is 31 chars max (8800) / 32 (8870); spaces count.
+        text = text[:31]
+        cmd_map = {
+            "tmpmes": "TMPMES",
+            "pmes1": "PMES1",
+            "pmes2": "PMES2",
+            "pmes3": "PMES3",
+            "pmes4": "PMES4",
+        }
+        cmd = cmd_map.get(message_type)
+        if cmd is None:
+            _LOGGER.error("Unknown message_type %r for thermostat %s", message_type, self.address)
+            return False
+        result = await self.protocol.execute_assignment_command(
+            self.address, cmd, text,
+        )
+        return result is not None
+
+    async def async_set_backlight(self) -> bool:
+        """Turn on the thermostat's backlight for 10 seconds.
+
+        Maps to ``BLTON`` (the only backlight control command per the
+        programmer's manual). The ``duration`` parameter from the service
+        schema is accepted but has no protocol effect — the 8870 always
+        holds the backlight on for 10s after BLTON.
+        """
+        if not self.available:
+            return False
+        # BLTON takes no value; use the connection layer directly so we
+        # don't append "=ON" via execute_assignment_command.
+        result = await self._send_command_with_retry(
+            f"SN{self.address} BLTON", retries=1, allow_skip=True,
+        )
+        return result is not None
+
+    async def async_reset_filter(self) -> bool:
+        """Clear the filter-change alarm.
+
+        Maps to ``FLTALM=OFF`` per the programmer's manual: ``When an
+        assignment command is received with the value parameter set to
+        OFF and the specified alarm is active, the respective alarm is
+        cleared and reset``.
+        """
+        if not self.available:
+            return False
+        result = await self.protocol.execute_assignment_command(
+            self.address, "FLTALM", "OFF",
+        )
+        if result is not None:
+            self._state["filter_alarm"] = False
+            return True
+        return False
+
+    async def async_set_lockout(
+        self,
+        fan_lockout: Optional[int] = None,
+        mode_lockout: Optional[int] = None,
+        setpoint_lockout: Optional[int] = None,
+        network_lockout: Optional[int] = None,
+        lockout_time: Optional[int] = None,
+        lockout_limit: Optional[int] = None,
+    ) -> bool:
+        """Configure keypad lockout settings.
+
+        Maps to the FANLK/MODELK/UPDNLK/NETLK/LKTIME/LKLIMIT commands per
+        the programmer's manual. Any None parameter is left unchanged
+        (no command sent for that field).
+        """
+        if not self.available:
+            return False
+        any_ok = False
+        for cmd, value in (
+            ("FANLK", fan_lockout),
+            ("MODELK", mode_lockout),
+            ("UPDNLK", setpoint_lockout),
+            ("NETLK", network_lockout),
+            ("LKTIME", lockout_time),
+            ("LKLIMIT", lockout_limit),
+        ):
+            if value is None:
+                continue
+            result = await self.protocol.execute_assignment_command(
+                self.address, cmd, str(value),
+            )
+            if result is not None:
+                any_ok = True
+        return any_ok
+
+    async def async_configure_cos(self, flags: List[str]) -> bool:
+        """Re-issue CR=NORMAL + the requested COS flag set.
+
+        Allows the user to override the default flag set at runtime via
+        the configure_cos service. Uses the same one-shot pattern as the
+        startup COS setup: CR=NORMAL, then bulk flag fire-and-forget.
+        """
+        if not self.available:
+            return False
+        return await self.async_enable_cos(flags=set(flags))
 
     def get_state(self) -> Dict[str, Any]:
         """Return the current state of the device.
