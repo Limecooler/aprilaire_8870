@@ -9,3 +9,5 @@ htmlcov/
 .pytest_cache/
 .mypy_cache/
 *.egg-info/
+# Word/Office lock files (e.g. ~$rilaire_programmers_manual_...doc when open)
+~$*
