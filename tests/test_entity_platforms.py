@@ -236,10 +236,12 @@ def test_sensor_setup_entry_creates_entities(hass) -> None:
 # ===========================================================================
 
 
-# HVAC_RELAY_INDICES has positions 1,3,5,7,9,11,13 — the format alternates
-# label / state where label is a single char (G,Y,W,Y,W,B,O).
-HVAC_STATUS_ALL_ON = "G+Y+W+Y+W+B+O+"
-HVAC_STATUS_ALL_OFF = "G-Y-W-Y-W-B-O-"
+# Format matches what live 8870 firmware returns (per programmer's manual
+# DP 10005756 and confirmed in production logs): each relay is
+# ``<label><+/->`` where stage relays use a digit suffix (Y1/W1/Y2/W2)
+# and single-stage relays don't (G/B/O). 18 chars total.
+HVAC_STATUS_ALL_ON = "G+Y1+W1+Y2+W2+B+O+"
+HVAC_STATUS_ALL_OFF = "G-Y1-W1-Y2-W2-B-O-"
 
 
 def _bs_data(**state):
@@ -289,6 +291,27 @@ def test_binary_sensor_heating_no_data() -> None:
     coord = make_coordinator(data={})
     s = bs.AprilaireHeatingStatusSensor(coord, make_device(1))
     assert s.is_on is False
+
+
+def test_binary_sensor_heating_hvac_status_is_none() -> None:
+    """v0.4.3 regression: device.py initializes hvac_status to None.
+
+    Pre-v0.4.2 the outer device_id lookup masked this with int/str
+    mismatch; v0.4.2 fixed the lookup and the None subscript started
+    raising TypeError on every coordinator update.
+    """
+    coord = make_coordinator(data={"1": {"available": True, "hvac_status": None}})
+    s = bs.AprilaireHeatingStatusSensor(coord, make_device(1))
+    assert s.is_on is False  # must not raise
+
+    s2 = bs.AprilaireCoolingStatusSensor(coord, make_device(1))
+    assert s2.is_on is False
+
+    s3 = bs.AprilaireFanStatusSensor(coord, make_device(1))
+    assert s3.is_on is False
+
+    s4 = bs.AprilaireEmergencyHeatStatusSensor(coord, make_device(1))
+    assert s4.is_on is False
 
 
 def test_binary_sensor_cooling_on() -> None:

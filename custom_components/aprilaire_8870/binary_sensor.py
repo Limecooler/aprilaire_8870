@@ -15,7 +15,28 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from . import AprilaireDataUpdateCoordinator
-from .const import DOMAIN, HVAC_RELAY_INDICES
+from .const import DOMAIN
+
+
+def _relay_on(hvac_status: Optional[str], relay: str) -> bool:
+    """Return True iff ``relay`` is followed by ``+`` in ``hvac_status``.
+
+    Robust to the two firmware formats we've seen
+    (``G-Y-W-Y-W-B-O-`` vs ``G-Y1-W1-Y2-W2-B+O-``) and to a ``None`` /
+    empty hvac_status from a freshly-added device that hasn't been polled
+    yet. v0.4.3 fix — the previous index-based lookup crashed with
+    ``TypeError: 'NoneType' object is not subscriptable`` whenever the
+    coordinator delivered an entry whose hvac_status hadn't populated.
+    """
+    if not hvac_status:
+        return False
+    idx = hvac_status.find(relay)
+    if idx < 0:
+        return False
+    sign_idx = idx + len(relay)
+    if sign_idx >= len(hvac_status):
+        return False
+    return hvac_status[sign_idx] == "+"
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -184,12 +205,8 @@ class AprilaireHeatingStatusSensor(AprilaireBinarySensor):
     @property
     def is_on(self) -> bool:
         """Return true if heating is active."""
-        if not self.coordinator.data.get(self._device_id):
-            return False
-        
-        # Check W1 (first stage heat) and W2 (second stage heat) relay status
-        hvac_status = self.coordinator.data[self._device_id].get("hvac_status", "")
-        return '+' in hvac_status[HVAC_RELAY_INDICES["W1"]] or '+' in hvac_status[HVAC_RELAY_INDICES["W2"]]
+        hvac_status = (self.coordinator.data.get(self._device_id) or {}).get("hvac_status")
+        return _relay_on(hvac_status, "W1") or _relay_on(hvac_status, "W2")
 
 
 class AprilaireCoolingStatusSensor(AprilaireBinarySensor):
@@ -208,12 +225,8 @@ class AprilaireCoolingStatusSensor(AprilaireBinarySensor):
     @property
     def is_on(self) -> bool:
         """Return true if cooling is active."""
-        if not self.coordinator.data.get(self._device_id):
-            return False
-        
-        # Check Y1 (first stage cool) and Y2 (second stage cool) relay status
-        hvac_status = self.coordinator.data[self._device_id].get("hvac_status", "")
-        return '+' in hvac_status[HVAC_RELAY_INDICES["Y1"]] or '+' in hvac_status[HVAC_RELAY_INDICES["Y2"]]
+        hvac_status = (self.coordinator.data.get(self._device_id) or {}).get("hvac_status")
+        return _relay_on(hvac_status, "Y1") or _relay_on(hvac_status, "Y2")
 
 
 class AprilaireFanStatusSensor(AprilaireBinarySensor):
@@ -232,12 +245,8 @@ class AprilaireFanStatusSensor(AprilaireBinarySensor):
     @property
     def is_on(self) -> bool:
         """Return true if fan is running."""
-        if not self.coordinator.data.get(self._device_id):
-            return False
-        
-        # Check G (fan) relay status
-        hvac_status = self.coordinator.data[self._device_id].get("hvac_status", "")
-        return '+' in hvac_status[HVAC_RELAY_INDICES["G"]]
+        hvac_status = (self.coordinator.data.get(self._device_id) or {}).get("hvac_status")
+        return _relay_on(hvac_status, "G")
 
 
 class AprilaireEmergencyHeatStatusSensor(AprilaireBinarySensor):
@@ -256,16 +265,11 @@ class AprilaireEmergencyHeatStatusSensor(AprilaireBinarySensor):
     @property
     def is_on(self) -> bool:
         """Return true if emergency heat is active."""
-        if not self.coordinator.data.get(self._device_id):
-            return False
-        
-        # Emergency heat is determined by the mode being EMHT and aux heat (W1/W2) being on
-        mode = self.coordinator.data[self._device_id].get("mode", "")
-        hvac_status = self.coordinator.data[self._device_id].get("hvac_status", "")
-        
-        return (
-            mode == "EMHT" and 
-            ('+' in hvac_status[HVAC_RELAY_INDICES["W1"]] or '+' in hvac_status[HVAC_RELAY_INDICES["W2"]])
+        data = self.coordinator.data.get(self._device_id) or {}
+        mode = data.get("mode") or ""
+        hvac_status = data.get("hvac_status")
+        return mode == "EMHT" and (
+            _relay_on(hvac_status, "W1") or _relay_on(hvac_status, "W2")
         )
 
 
