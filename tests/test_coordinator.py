@@ -848,7 +848,13 @@ async def test_set_heat_setpoint_targeted_update_no_full_poll(hass) -> None:
     """
     dev = make_dev(1)
     dev.async_set_temperature = AsyncMock(return_value=True)
-    dev.get_state = MagicMock(return_value={"heat_setpoint": 72.0, "available": True})
+    # Real device.get_state returns _state ONLY (no "available" key —
+    # that's a separate attribute). The publish must merge in the
+    # available flag itself; reproduces the v0.4.10 bug where omitting
+    # it caused the entity to immediately go "unavailable" after every
+    # successful setpoint change.
+    dev.get_state = MagicMock(return_value={"heat_setpoint": 72.0})
+    dev.available = True
     coord = make_coord(hass, devices={1: dev})
     coord._store = MagicMock()
     coord._store.async_save = AsyncMock()
@@ -860,7 +866,26 @@ async def test_set_heat_setpoint_targeted_update_no_full_poll(hass) -> None:
     assert ok is True
     # Targeted publish landed on data and notified.
     assert coord.data["1"]["heat_setpoint"] == 72.0
+    # CRITICAL: available must be preserved so the entity doesn't go unavailable.
+    assert coord.data["1"]["available"] is True
     coord.async_update_listeners.assert_called_once()
+
+
+async def test_publish_single_device_state_drops_from_cache(hass) -> None:
+    """v0.4.10: after a successful set we've just talked to the device,
+    so the from_cache marker is stale — drop it so HA stops gating
+    operations behind the from_cache check.
+    """
+    dev = make_dev(1)
+    dev.get_state = MagicMock(return_value={"heat_setpoint": 72.0})
+    dev.available = True
+    coord = make_coord(hass, devices={1: dev})
+    coord._device_data = {"1": {"available": True, "from_cache": True}}
+    coord.data = {"1": {"available": True, "from_cache": True}}
+    coord.async_update_listeners = MagicMock()
+    coord._publish_single_device_state(dev)
+    assert "from_cache" not in coord.data["1"]
+    assert "from_cache" not in coord._device_data["1"]
 
 
 async def test_set_hold_targeted_update(hass) -> None:

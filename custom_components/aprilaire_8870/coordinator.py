@@ -751,6 +751,12 @@ class AprilaireDataUpdateCoordinator(DataUpdateCoordinator):
         ``async_update_listeners()`` updates the UI for THIS device only,
         instead of triggering a full 9-command bulk poll of all 11
         devices for the next ~30 seconds.
+
+        v0.4.10: also writes ``available`` and clears ``from_cache`` so
+        the entity doesn't go ``unavailable`` after the publish. The bulk
+        poll path tracks these out-of-band (device.available is a
+        separate attribute from device._state); the targeted publish has
+        to mirror the same merge that ``_async_update_data`` does.
         """
         try:
             state = device.get_state()
@@ -764,8 +770,14 @@ class AprilaireDataUpdateCoordinator(DataUpdateCoordinator):
             self._device_data = {}
         if self.data is None:
             self.data = {}
-        self._device_data[device_id_str] = state
-        self.data[device_id_str] = state.copy()
+        # Mirror _async_update_data's merge: state + available + drop
+        # from_cache (we just talked to the device, so the cache marker
+        # is stale).
+        merged = dict(state)
+        merged["available"] = getattr(device, "available", True)
+        merged.pop("from_cache", None)
+        self._device_data[device_id_str] = merged
+        self.data[device_id_str] = merged.copy()
         self.async_update_listeners()
 
     async def async_set_heat_setpoint(self, device_id: str, temperature: float) -> bool:
