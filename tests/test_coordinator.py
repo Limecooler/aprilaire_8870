@@ -759,6 +759,87 @@ async def test_bulk_poll_essentials_swallows_global_command_exceptions(hass) -> 
     await coord._async_bulk_poll_essentials()
 
 
+async def test_bulk_poll_essentials_returns_responder_set(hass) -> None:
+    """v0.4.1: bulk pass returns set of addresses that answered."""
+    dev1 = MagicMock()
+    dev1._process_state_response = MagicMock()
+    dev1.monitor_humidity = False
+    dev1.monitor_outdoor_temp = False
+    dev1._consecutive_full_poll_failures = 0
+    dev1._slow_keepalive_mode = False
+    dev2 = MagicMock()
+    dev2._process_state_response = MagicMock()
+    dev2.monitor_humidity = False
+    dev2.monitor_outdoor_temp = False
+    dev2._consecutive_full_poll_failures = 0
+    dev2._slow_keepalive_mode = False
+    coord = make_coord(hass, devices={1: dev1, 2: dev2})
+    coord.connection.is_connected = MagicMock(return_value=True)
+    # dev1 responds to TEMP; dev2 responds to MODE — both alive on bulk.
+    coord.connection.async_send_global_command = AsyncMock(side_effect=[
+        {1: "SN1 TEMP=72F"},
+        {2: "SN2 MODE=COOL"},
+        {}, {}, {}, {}, {},
+    ])
+    responded = await coord._async_bulk_poll_essentials()
+    assert responded == {1, 2}
+
+
+async def test_bulk_poll_essentials_includes_hum_ot_when_flags_on(hass) -> None:
+    """v0.4.1: bulk HUM/OT when monitor flags are set on devices."""
+    dev = MagicMock()
+    dev._process_state_response = MagicMock()
+    dev.monitor_humidity = True
+    dev.monitor_outdoor_temp = True
+    dev._consecutive_full_poll_failures = 0
+    dev._slow_keepalive_mode = False
+    coord = make_coord(hass, devices={1: dev})
+    coord.connection.is_connected = MagicMock(return_value=True)
+    send_mock = AsyncMock(return_value={})
+    coord.connection.async_send_global_command = send_mock
+    await coord._async_bulk_poll_essentials()
+    sent_commands = [c.args[0] for c in send_mock.call_args_list]
+    # Must include HUM? and OT? alongside the essentials.
+    assert "HUM?" in sent_commands
+    assert "OT?" in sent_commands
+
+
+async def test_bulk_poll_essentials_resets_circuit_breaker(hass) -> None:
+    """v0.4.1: responder addresses get their slow-keepalive cleared."""
+    dev = MagicMock()
+    dev._process_state_response = MagicMock()
+    dev.monitor_humidity = False
+    dev.monitor_outdoor_temp = False
+    dev._consecutive_full_poll_failures = 4
+    dev._slow_keepalive_mode = True
+    coord = make_coord(hass, devices={1: dev})
+    coord.connection.is_connected = MagicMock(return_value=True)
+    coord.connection.async_send_global_command = AsyncMock(side_effect=[
+        {1: "SN1 TEMP=72F"}, {}, {}, {}, {}, {}, {},
+    ])
+    await coord._async_bulk_poll_essentials()
+    assert dev._consecutive_full_poll_failures == 0
+    assert dev._slow_keepalive_mode is False
+
+
+async def test_update_data_skips_essentials_for_bulk_responders(hass) -> None:
+    """v0.4.1: per-device async_update is skipped for addresses bulk handled."""
+    dev1 = make_dev(1)
+    dev2 = make_dev(2)
+    coord = make_coord(hass, devices={1: dev1, 2: dev2})
+    coord._connection_state = True
+    coord._store = MagicMock()
+    coord._store.async_save = AsyncMock()
+    # Force the bulk pass to claim address 1 only — address 2 falls through.
+    coord._async_bulk_poll_essentials = AsyncMock(return_value={1})
+    with patch("custom_components.aprilaire_8870.coordinator.asyncio.sleep", new=AsyncMock()):
+        await coord._async_update_data()
+    # dev1 was bulked — async_update called with skip_essentials=True
+    dev1.async_update.assert_called_once_with(skip_essentials=True)
+    # dev2 was NOT bulked — full per-device poll
+    dev2.async_update.assert_called_once_with(skip_essentials=False)
+
+
 async def test_cos_verification_backs_off_when_zero_accept(hass) -> None:
     """When NO device accepts COS flags, verification interval stretches to 6h."""
     dev = MagicMock()

@@ -1230,6 +1230,56 @@ async def test_async_update_skips_humidity_when_disabled() -> None:
     assert not any("HUM" in c for c in conn.sent)
 
 
+async def test_async_update_skip_essentials_bypasses_essentials_and_hum_ot() -> None:
+    """v0.4.1: skip_essentials=True means no essentials/HUM/OT commands on wire.
+
+    Bulk SN0 pass already collected those — re-polling per-device would
+    double the cycle's command count for the happy path.
+    """
+    from custom_components.aprilaire_8870.device import AprilaireDevice
+    from custom_components.aprilaire_8870.protocol import AprilaireProtocol
+    from tests.conftest import StubConnection
+    conn = StubConnection({})
+    proto = AprilaireProtocol(connection=conn)
+    dev = AprilaireDevice(1, MagicMock(), proto, monitor_alarms=False)
+    dev.available = True
+    dev._state["mode"] = "COOL"
+    with patch("custom_components.aprilaire_8870.device.asyncio.sleep", new=AsyncMock()):
+        result = await dev.async_update(skip_essentials=True)
+    # Skipped path reports success so the coordinator counts the device fresh.
+    assert result is True
+    # No essentials hit the wire.
+    for cmd in ("TEMP", "MODE", "FAN", "HVAC", "HOLD", "SH", "SC"):
+        assert not any(f"{cmd}?" in c for c in conn.sent), (
+            f"{cmd}? should NOT have been sent when skip_essentials=True"
+        )
+    # Also no HUM/OT — those are bulked too.
+    assert not any("HUM?" in c for c in conn.sent)
+    assert not any("OT?" in c for c in conn.sent)
+
+
+async def test_async_update_skip_essentials_still_runs_alarm_poll() -> None:
+    """v0.4.1: alarm queries remain per-device even when essentials skipped."""
+    from custom_components.aprilaire_8870.device import AprilaireDevice
+    from custom_components.aprilaire_8870.protocol import AprilaireProtocol
+    from tests.conftest import StubConnection
+    conn = StubConnection({})
+    proto = AprilaireProtocol(connection=conn)
+    dev = AprilaireDevice(1, MagicMock(), proto, monitor_alarms=True)
+    dev.available = True
+    conn.responses["SN1 FLTALM?"] = "SN1 FLTALM=ON"
+    conn.responses["SN1 WPALM?"] = "SN1 WPALM=OFF"
+    conn.responses["SN1 SYSALM?"] = "SN1 SYSALM=OFF"
+    conn.responses["SN1 DEHALM?"] = "SN1 DEHALM=OFF"
+    conn.responses["SN1 ERROR?"] = "SN1 ERROR=000000"
+    dev._state["mode"] = "COOL"
+    with patch("custom_components.aprilaire_8870.device.asyncio.sleep", new=AsyncMock()):
+        await dev.async_update(skip_essentials=True)
+    # Alarm queries still went out.
+    assert any("FLTALM?" in c for c in conn.sent)
+    assert dev._state.get("filter_alarm") is True
+
+
 async def test_async_update_retries_then_succeed() -> None:
     dev, _, proto = make_device()
     dev.available = True

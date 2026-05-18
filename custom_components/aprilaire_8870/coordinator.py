@@ -535,11 +535,14 @@ class AprilaireDataUpdateCoordinator(DataUpdateCoordinator):
             # v0.4.0: bulk-poll path. Each essential command goes out once via
             # SN0 global broadcast and collects N responses in one bus round.
             # For 11 devices × 7 essential commands that's 7 wire commands
-            # instead of 77. Any device that didn't respond falls through to
-            # the legacy per-device path below so partial bus glitches don't
-            # blank out the whole cycle.
+            # instead of 77.
+            # v0.4.1: bulk now returns the set of addresses that responded.
+            # Per-device async_update only fires for addresses that didn't
+            # respond to bulk (with a full poll including its own retries) and
+            # for the alarm-only optional pass that's per-device anyway.
+            bulk_responders: set = set()
             if self.devices:
-                await self._async_bulk_poll_essentials()
+                bulk_responders = await self._async_bulk_poll_essentials()
 
             # Update each device. Pace requests so we don't crowd the RS-485 bus
             # — every command needs ~265ms processing time on the thermostat,
@@ -553,9 +556,14 @@ class AprilaireDataUpdateCoordinator(DataUpdateCoordinator):
                         await asyncio.sleep(inter_device_delay)
                     _LOGGER.debug("Updating device %s", device_id)
                     try:
-                        # Poll device state — async_update will skip queries
-                        # that already have fresh state from the bulk pass.
-                        await device.async_update()
+                        # Skip per-device essentials when bulk already got
+                        # this address — async_update with skip_essentials=True
+                        # only polls the alarm group (if monitor_alarms is on
+                        # and not bulked) and lets unsupported-cmd tracking
+                        # continue per-device.
+                        await device.async_update(
+                            skip_essentials=(device_id in bulk_responders),
+                        )
                         
                         try:
                             device_state = device.get_state()
@@ -614,25 +622,32 @@ class AprilaireDataUpdateCoordinator(DataUpdateCoordinator):
             _LOGGER.error("Traceback: %s", traceback.format_exc())
             raise UpdateFailed(f"Error communicating with Aprilaire devices: {ex}")
 
-    async def _async_bulk_poll_essentials(self) -> None:
+    async def _async_bulk_poll_essentials(self) -> set:
         """Issue one SN0 global per essential command, route responses per-device.
 
         Each global reads a single value type from every connected thermostat
         in one bus round-trip — see Aprilaire install manual appendix:
         ``SN0 <command>?`` makes all connected thermostats respond with their
         address prefix. Per-device state is updated via the same path as
-        unsolicited broadcasts (device._process_state_response), so the same
-        rules apply: any device that didn't reply just doesn't get an update
-        this cycle and the legacy per-device polling loop fills the gap.
+        unsolicited broadcasts (device._process_state_response).
 
-        Only essential state queries go through this path. Optional queries
-        (HUM, OT, alarms) stay on the per-device loop because they're often
-        unsupported on a per-device basis and don't benefit from globals.
+        Returns the set of addresses that responded to AT LEAST ONE essential
+        command. The caller uses this to skip the per-device essentials loop
+        for happy addresses — otherwise every cycle re-polls all 7 essentials
+        per device redundantly (~77 wasted commands on 11 devices). Addresses
+        that returned nothing on bulk fall through to the per-device loop's
+        full poll so retry-with-jitter and the circuit breaker still kick in.
+
+        Optional commands (HUM/OT/alarms) are also bulked here when their
+        respective monitor_* flags are on for the integration as a whole.
+        Alarms remain per-device because the optional-skip and circuit-breaker
+        accounting is per-device.
         """
+        responded: set = set()
         if not self.connection or not getattr(self.connection, "is_connected", lambda: False)():
-            return
+            return responded
         if not self.devices:
-            return
+            return responded
 
         addresses = sorted(self.devices.keys())
         # Map each global query command code → device-level command name
@@ -650,6 +665,20 @@ class AprilaireDataUpdateCoordinator(DataUpdateCoordinator):
         # is what gates SH/SC against the freshly-polled mode.)
         essentials.append(("SH", "SH"))
         essentials.append(("SC", "SC"))
+
+        # v0.4.1: bulk the optional sensor queries too when enabled. Saves
+        # 2 × N commands per cycle on an 11-device bus. Alarms (FLTALM etc.)
+        # stay per-device since the optional-skip + circuit-breaker accounting
+        # is per-device-per-command.
+        # Sample any device to determine whether the integration was started
+        # with humidity/outdoor-temp monitoring on; the manager propagates the
+        # same flag to every device.
+        sample_dev = next(iter(self.devices.values()), None)
+        if sample_dev is not None:
+            if getattr(sample_dev, "monitor_humidity", False):
+                essentials.append(("HUM", "HUM"))
+            if getattr(sample_dev, "monitor_outdoor_temp", False):
+                essentials.append(("OT", "OT"))
 
         # Per the 8870 programmer's manual: when responses are expected to
         # a global command, the host must wait 265ms × "Number of Thermostats
@@ -677,11 +706,31 @@ class AprilaireDataUpdateCoordinator(DataUpdateCoordinator):
                     continue
                 try:
                     process(dispatch_name, response_line)
+                    responded.add(address)
                 except Exception as proc_ex:  # pragma: no cover (defensive)
                     _LOGGER.debug(
                         "Error applying bulk %s for thermostat %s: %s",
                         code, address, proc_ex,
                     )
+
+        # Bulk responses prove these devices are alive — reset their
+        # circuit-breaker state so a previously-tripped slow-keepalive
+        # device returns to full polling.
+        for address in responded:
+            device = self.devices.get(address)
+            if device is None:
+                continue
+            if getattr(device, "_slow_keepalive_mode", False):
+                _LOGGER.info(
+                    "Thermostat %s responded to bulk; clearing slow-keepalive",
+                    address,
+                )
+            if hasattr(device, "_consecutive_full_poll_failures"):
+                device._consecutive_full_poll_failures = 0
+            if hasattr(device, "_slow_keepalive_mode"):
+                device._slow_keepalive_mode = False
+
+        return responded
 
     async def async_set_heat_setpoint(self, device_id: str, temperature: float) -> None:
         """Set the heat setpoint for a device."""
