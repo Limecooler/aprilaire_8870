@@ -457,6 +457,15 @@ class AprilaireDataUpdateCoordinator(DataUpdateCoordinator):
                 _LOGGER.debug("Initializing data dictionary")
                 self.data = {}
                 
+            # v0.4.0: bulk-poll path. Each essential command goes out once via
+            # SN0 global broadcast and collects N responses in one bus round.
+            # For 11 devices × 7 essential commands that's 7 wire commands
+            # instead of 77. Any device that didn't respond falls through to
+            # the legacy per-device path below so partial bus glitches don't
+            # blank out the whole cycle.
+            if self.devices:
+                await self._async_bulk_poll_essentials()
+
             # Update each device. Pace requests so we don't crowd the RS-485 bus
             # — every command needs ~265ms processing time on the thermostat,
             # and back-to-back polls starve higher-addressed devices first.
@@ -469,7 +478,8 @@ class AprilaireDataUpdateCoordinator(DataUpdateCoordinator):
                         await asyncio.sleep(inter_device_delay)
                     _LOGGER.debug("Updating device %s", device_id)
                     try:
-                        # Poll device state
+                        # Poll device state — async_update will skip queries
+                        # that already have fresh state from the bulk pass.
                         await device.async_update()
                         
                         try:
@@ -528,6 +538,67 @@ class AprilaireDataUpdateCoordinator(DataUpdateCoordinator):
             _LOGGER.error("Error updating data: %s", ex)
             _LOGGER.error("Traceback: %s", traceback.format_exc())
             raise UpdateFailed(f"Error communicating with Aprilaire devices: {ex}")
+
+    async def _async_bulk_poll_essentials(self) -> None:
+        """Issue one SN0 global per essential command, route responses per-device.
+
+        Each global reads a single value type from every connected thermostat
+        in one bus round-trip — see Aprilaire install manual appendix:
+        ``SN0 <command>?`` makes all connected thermostats respond with their
+        address prefix. Per-device state is updated via the same path as
+        unsolicited broadcasts (device._process_state_response), so the same
+        rules apply: any device that didn't reply just doesn't get an update
+        this cycle and the legacy per-device polling loop fills the gap.
+
+        Only essential state queries go through this path. Optional queries
+        (HUM, OT, alarms) stay on the per-device loop because they're often
+        unsupported on a per-device basis and don't benefit from globals.
+        """
+        if not self.connection or not getattr(self.connection, "is_connected", lambda: False)():
+            return
+        if not self.devices:
+            return
+
+        addresses = sorted(self.devices.keys())
+        # Map each global query command code → device-level command name
+        # for routing into _process_state_response.
+        essentials = [
+            ("TEMP", "TEMP"),
+            ("MODE", "MODE"),
+            ("FAN", "FAN"),
+            ("HVAC", "HVAC"),
+            ("HOLD", "HOLD"),
+        ]
+        # Setpoint queries are mode-dependent — issue both globally; devices
+        # in the wrong mode will just not return a meaningful value.
+        # (Mode itself is in the same batch, so the per-device loop later
+        # is what gates SH/SC against the freshly-polled mode.)
+        essentials.append(("SH", "SH"))
+        essentials.append(("SC", "SC"))
+
+        for code, dispatch_name in essentials:
+            try:
+                responses = await self.connection.async_send_global_command(
+                    f"{code}?", expected_addresses=addresses, timeout=3.0,
+                )
+            except Exception as bulk_ex:  # pragma: no cover (defensive)
+                _LOGGER.debug("Bulk %s? failed: %s", code, bulk_ex)
+                continue
+
+            for address, response_line in responses.items():
+                device = self.devices.get(address)
+                if device is None:
+                    continue
+                process = getattr(device, "_process_state_response", None)
+                if not callable(process):
+                    continue
+                try:
+                    process(dispatch_name, response_line)
+                except Exception as proc_ex:  # pragma: no cover (defensive)
+                    _LOGGER.debug(
+                        "Error applying bulk %s for thermostat %s: %s",
+                        code, address, proc_ex,
+                    )
 
     async def async_set_heat_setpoint(self, device_id: str, temperature: float) -> None:
         """Set the heat setpoint for a device."""

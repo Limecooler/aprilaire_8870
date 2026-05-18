@@ -638,6 +638,57 @@ async def test_handle_bus_message_ignores_garbage(hass) -> None:
     dev._process_state_response.assert_not_called()
 
 
+async def test_bulk_poll_essentials_routes_responses_per_device(hass) -> None:
+    """v0.4.0: SN0 globals dispatch responses into per-device state."""
+    dev1 = MagicMock()
+    dev1._process_state_response = MagicMock()
+    dev2 = MagicMock()
+    dev2._process_state_response = MagicMock()
+    coord = make_coord(hass, devices={1: dev1, 2: dev2})
+    coord.connection.is_connected = MagicMock(return_value=True)
+    coord.connection.async_send_global_command = AsyncMock(side_effect=[
+        {1: "SN1 TEMP=72F", 2: "SN2 TEMP=70F"},     # TEMP
+        {1: "SN1 MODE=COOL", 2: "SN2 MODE=HEAT"},    # MODE
+        {1: "SN1 FAN=AUTO"},                          # FAN (only dev 1)
+        {1: "SN1 HVAC=G-Y1-W1-Y2-W2-B-O-",
+         2: "SN2 HVAC=G+Y1+W1-Y2-W2-B-O+"},          # HVAC
+        {1: "SN1 HOLD=OFF", 2: "SN2 HOLD=OFF"},      # HOLD
+        {},                                            # SH (no responses)
+        {1: "SN1 SC=75F", 2: "SN2 SC=78F"},          # SC
+    ])
+
+    await coord._async_bulk_poll_essentials()
+
+    # Each device received one routed call per response, NOT per command.
+    # dev1 got 6 responses (TEMP, MODE, FAN, HVAC, HOLD, SC).
+    # dev2 got 5 (TEMP, MODE, HVAC, HOLD, SC) — missed FAN and SH.
+    assert dev1._process_state_response.call_count == 6
+    assert dev2._process_state_response.call_count == 5
+    # Spot-check the routing: dev1's first call should be TEMP=72F.
+    first_dev1 = dev1._process_state_response.call_args_list[0]
+    assert first_dev1.args == ("TEMP", "SN1 TEMP=72F")
+
+
+async def test_bulk_poll_essentials_returns_early_when_disconnected(hass) -> None:
+    coord = make_coord(hass, devices={1: MagicMock()})
+    coord.connection.is_connected = MagicMock(return_value=False)
+    coord.connection.async_send_global_command = AsyncMock()
+    await coord._async_bulk_poll_essentials()
+    coord.connection.async_send_global_command.assert_not_called()
+
+
+async def test_bulk_poll_essentials_swallows_global_command_exceptions(hass) -> None:
+    dev = MagicMock()
+    dev._process_state_response = MagicMock()
+    coord = make_coord(hass, devices={1: dev})
+    coord.connection.is_connected = MagicMock(return_value=True)
+    coord.connection.async_send_global_command = AsyncMock(
+        side_effect=RuntimeError("bus glitch")
+    )
+    # Should not raise.
+    await coord._async_bulk_poll_essentials()
+
+
 async def test_cos_verification_backs_off_when_zero_accept(hass) -> None:
     """When NO device accepts COS flags, verification interval stretches to 6h."""
     dev = MagicMock()
