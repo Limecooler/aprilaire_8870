@@ -231,8 +231,9 @@ async def test_setup_cos_background_uses_bulk_globals(hass) -> None:
     runtime.connection.async_send_global_command = AsyncMock(side_effect=fake_global)
     await async_setup_cos_background(hass, entry, {1: dev1, 2: dev2})
 
-    # CR=NORMAL (1) + 7 flags × (write + readback) = 15 global commands.
-    assert runtime.connection.async_send_global_command.call_count == 15
+    # CR=NORMAL (1) + 5 flags × (write + readback) = 11 global commands.
+    # (8870 supports c1-c12 only; c14/c19 were removed from defaults in v0.4.5.)
+    assert runtime.connection.async_send_global_command.call_count == 11
     # All flags accepted on both devices.
     assert dev1._cos_enabled is True
     assert dev2._cos_enabled is True
@@ -314,8 +315,8 @@ async def test_setup_cos_background_retry_giveup_logs_but_continues(hass) -> Non
     runtime.connection.async_send_global_command = AsyncMock(side_effect=fake_global)
     await async_setup_cos_background(hass, entry, {1: dev})
 
-    # All 7 flags attempted a retry.
-    assert dev.protocol.execute_assignment_command.call_count == 7
+    # All 5 default flags (c1/c2/c5/c7/c8) attempted a retry.
+    assert dev.protocol.execute_assignment_command.call_count == 5
     # None stuck.
     assert dev._cos_flags == set()
 

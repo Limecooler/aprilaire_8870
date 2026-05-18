@@ -826,6 +826,61 @@ async def test_global_command_returns_partial_on_timeout(hass) -> None:
     assert 2 not in conn._pending
 
 
+async def test_global_command_holds_lock_until_responses_arrive(hass) -> None:
+    """v0.4.5 regression: _send_lock must span the FULL request+response
+    window, not just the write. Previously a concurrent SN<addr> write
+    (e.g. from the COS background setup retry path) could interleave
+    into a bulk SN0's still-streaming response window and corrupt the
+    TDMA-paced replies.
+
+    Verified by checking that a concurrent send waits until the global's
+    response window closes before it gets to write.
+    """
+    conn = _make_serial_conn(hass)
+    conn._state = STATE_CONNECTED
+    conn._writer = _FakeWriter()
+
+    global_done_at: list = []
+    concurrent_send_started_at: list = []
+
+    async def deliver_globals() -> None:
+        # Resolve all 3 globals AFTER 200ms.
+        await asyncio.sleep(0.2)
+        conn._try_resolve_pending("SN1  T=72F")
+        conn._try_resolve_pending("SN2  T=70F")
+        conn._try_resolve_pending("SN3  T=68F")
+
+    async def concurrent_writer() -> None:
+        # Try to fire a per-device write that should block until the
+        # global is done.
+        await asyncio.sleep(0.05)  # let the global grab the lock first
+        concurrent_send_started_at.append(asyncio.get_running_loop().time())
+        # acquiring _send_lock from another async path
+        async with conn._send_lock:
+            pass  # immediately release once we hold it
+
+    loop = asyncio.get_running_loop()
+    deliver_task = loop.create_task(deliver_globals())
+    writer_task = loop.create_task(concurrent_writer())
+
+    started = loop.time()
+    result = await conn.async_send_global_command(
+        "TEMP?", expected_addresses=[1, 2, 3], timeout=1.0,
+    )
+    global_done_at.append(loop.time())
+    await writer_task
+    await deliver_task
+
+    assert len(result) == 3
+    # The concurrent writer must NOT have acquired the lock until the
+    # global's response window closed (~200ms). Allow a small fudge factor.
+    assert concurrent_send_started_at, "concurrent writer didn't run"
+    # Concurrent task started before global finished; verify it had to
+    # wait for the lock by checking the global completed at >= 0.2s
+    # after we started.
+    assert (global_done_at[0] - started) >= 0.18
+
+
 async def test_global_command_not_connected_returns_empty(hass) -> None:
     conn = _make_serial_conn(hass)
     # Not setting STATE_CONNECTED

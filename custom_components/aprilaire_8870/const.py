@@ -96,15 +96,21 @@ COS_FLAG_SCHEDULE: Final = "c16"      # Schedule changes
 COS_FLAG_HOLD_STATUS: Final = "c17"   # Hold status changes
 COS_FLAG_ERRORS: Final = "c19"        # Error status changes
 
-# Default COS flags to enable
+# Default COS flags to enable.
+#
+# The 8870 firmware only supports COS flags c1 through c12 per live log
+# evidence (v0.4.5): every SN<n> c14=ON / c19=ON write timed out with no
+# response on the 11-device bus. c14 (alarms) and c19 (errors) remain
+# defined as constants for documentation, but enabling them on a real
+# 8870 wedges the bus with retry timeouts and never produces broadcasts.
+# Alarm/error state is still picked up by the optional per-device poll
+# when monitor_alarms is enabled.
 DEFAULT_COS_FLAGS: Final = [
-    COS_FLAG_HVAC_RELAYS,
-    COS_FLAG_TEMPERATURE,
-    COS_FLAG_SETPOINTS,
-    COS_FLAG_MODE,
-    COS_FLAG_FAN,
-    COS_FLAG_ALARMS,
-    COS_FLAG_ERRORS,
+    COS_FLAG_HVAC_RELAYS,      # c1
+    COS_FLAG_TEMPERATURE,      # c2
+    COS_FLAG_SETPOINTS,        # c5
+    COS_FLAG_MODE,             # c7
+    COS_FLAG_FAN,              # c8
 ]
 
 # Map COS flags to their corresponding message patterns

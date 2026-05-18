@@ -228,61 +228,72 @@ class AprilaireConnectionBase(ABC):
         if not expected_addresses:
             return {}
 
-        # Pre-register one future per expected address. Any address that
-        # already has a pending request (e.g. concurrent SN<addr> command)
-        # gets serialized — wait for it to complete first so we don't
-        # collide on the per-address slot.
-        futures: Dict[int, asyncio.Future] = {}
-        for address in expected_addresses:
-            existing = self._pending.get(address)
-            if existing is not None and not existing.done():
-                try:
-                    await existing
-                except (asyncio.CancelledError, asyncio.TimeoutError):
-                    pass
-            f: asyncio.Future = self.hass.loop.create_future()
-            self._pending[address] = f
-            futures[address] = f
+        # v0.4.5: hold _send_lock across the ENTIRE request + response
+        # window, not just the write. The bulk SN0 response window is up
+        # to 9 seconds (TDMA 265ms × 32 slots per the install manual);
+        # previously the lock was released after the write, so a
+        # concurrent task (most commonly the COS background setup's
+        # per-device retries) could fire a SN<addr> write into the
+        # middle of that window and collide with a response that was
+        # still being TDMA-streamed back. Holding the lock for the full
+        # transaction is the only way to make the bus genuinely serial.
 
         responses: Dict[int, str] = {}
-        try:
+        async with self._send_lock:
+            # Pre-register one future per expected address. Any address that
+            # already has a pending request (e.g. an unsolicited COS
+            # broadcast that the read loop is mid-resolving) gets serialized
+            # — wait for it to complete first so we don't collide on the
+            # per-address slot.
+            futures: Dict[int, asyncio.Future] = {}
+            for address in expected_addresses:
+                existing = self._pending.get(address)
+                if existing is not None and not existing.done():
+                    try:
+                        await existing
+                    except (asyncio.CancelledError, asyncio.TimeoutError):
+                        pass
+                f: asyncio.Future = self.hass.loop.create_future()
+                self._pending[address] = f
+                futures[address] = f
+
             try:
-                async with self._send_lock:
+                try:
                     formatted = f"SN0 {command}"
                     if not formatted.endswith("\r"):
                         formatted += "\r"
                     await self.async_send_command(formatted)
-            except Exception as err:  # pylint: disable=broad-except
-                _LOGGER.error("Error sending global command %s: %s", command, err)
-                return {}
+                except Exception as err:  # pylint: disable=broad-except
+                    _LOGGER.error("Error sending global command %s: %s", command, err)
+                    return {}
 
-            # Wait for all-or-timeout. We use a single timeout window for the
-            # whole batch — individual devices' jitter just consumes part of it.
-            done, pending = await asyncio.wait(
-                set(futures.values()),
-                timeout=timeout,
-                return_when=asyncio.ALL_COMPLETED,
-            )
-            for address, future in futures.items():
-                if future in done and not future.cancelled():
-                    try:
-                        responses[address] = future.result()
-                    except Exception:  # pragma: no cover - defensive
-                        continue
-            if len(responses) < len(expected_addresses):
-                _LOGGER.debug(
-                    "Global %s: got %d/%d responses (missing %s)",
-                    command,
-                    len(responses),
-                    len(expected_addresses),
-                    sorted(set(expected_addresses) - set(responses)),
+                # Wait for all-or-timeout. We use a single timeout window for the
+                # whole batch — individual devices' jitter just consumes part of it.
+                done, pending = await asyncio.wait(
+                    set(futures.values()),
+                    timeout=timeout,
+                    return_when=asyncio.ALL_COMPLETED,
                 )
-        finally:
-            for address, future in futures.items():
-                if self._pending.get(address) is future:
-                    self._pending.pop(address, None)
-                if not future.done():
-                    future.cancel()
+                for address, future in futures.items():
+                    if future in done and not future.cancelled():
+                        try:
+                            responses[address] = future.result()
+                        except Exception:  # pragma: no cover - defensive
+                            continue
+                if len(responses) < len(expected_addresses):
+                    _LOGGER.debug(
+                        "Global %s: got %d/%d responses (missing %s)",
+                        command,
+                        len(responses),
+                        len(expected_addresses),
+                        sorted(set(expected_addresses) - set(responses)),
+                    )
+            finally:
+                for address, future in futures.items():
+                    if self._pending.get(address) is future:
+                        self._pending.pop(address, None)
+                    if not future.done():
+                        future.cancel()
         return responses
 
     async def async_send_command_with_response(
@@ -319,40 +330,46 @@ class AprilaireConnectionBase(ABC):
         except ValueError:  # pragma: no cover  (regex captures \d+)
             return None
 
-        # If something is already pending for this address, wait for it to
-        # complete before we send our own — RS-485 is single-master and
-        # interleaving requests to the same device on the wire would mix
-        # up correlation.
-        existing = self._pending.get(address)
-        if existing is not None and not existing.done():
-            try:
-                await existing
-            except (asyncio.CancelledError, asyncio.TimeoutError):
-                pass
+        # v0.4.5: hold _send_lock for the FULL request+response cycle.
+        # Same reasoning as async_send_global_command: releasing after the
+        # write lets a concurrent task (bulk SN0 poll, COS background
+        # setup, service call) interleave its own write into our response
+        # window. With per-address futures correlation could in theory
+        # survive that, but TDMA timing on the bus can't — a concurrent
+        # SN<other-addr> write physically corrupts the response stream.
+        async with self._send_lock:
+            # If something is already pending for THIS address (e.g. an
+            # in-flight COS broadcast), wait for it to settle before we
+            # claim the slot — keeps per-address future correlation clean.
+            existing = self._pending.get(address)
+            if existing is not None and not existing.done():
+                try:
+                    await existing
+                except (asyncio.CancelledError, asyncio.TimeoutError):
+                    pass
 
-        future: asyncio.Future = self.hass.loop.create_future()
-        self._pending[address] = future
+            future: asyncio.Future = self.hass.loop.create_future()
+            self._pending[address] = future
 
-        try:
             try:
-                async with self._send_lock:
+                try:
                     await self.async_send_command(command)
-            except Exception as err:  # pylint: disable=broad-except
-                _LOGGER.error("Error sending command: %s", err)
-                return None
+                except Exception as err:  # pylint: disable=broad-except
+                    _LOGGER.error("Error sending command: %s", err)
+                    return None
 
-            try:
-                return await asyncio.wait_for(future, timeout=timeout)
-            except asyncio.TimeoutError:
-                _LOGGER.warning("No response received for command: %s", command.strip())
-                return None
-            except asyncio.CancelledError:
-                return None
-        finally:
-            # Always pop our own slot — but don't clobber a different
-            # future that happens to have replaced ours.
-            if self._pending.get(address) is future:
-                self._pending.pop(address, None)
+                try:
+                    return await asyncio.wait_for(future, timeout=timeout)
+                except asyncio.TimeoutError:
+                    _LOGGER.warning("No response received for command: %s", command.strip())
+                    return None
+                except asyncio.CancelledError:
+                    return None
+            finally:
+                # Always pop our own slot — but don't clobber a different
+                # future that happens to have replaced ours.
+                if self._pending.get(address) is future:
+                    self._pending.pop(address, None)
 
     async def async_start_reading(self) -> None:
         """Start the continuous reading task."""
