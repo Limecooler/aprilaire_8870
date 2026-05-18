@@ -863,6 +863,32 @@ async def test_set_heat_setpoint_targeted_update_no_full_poll(hass) -> None:
     coord.async_update_listeners.assert_called_once()
 
 
+async def test_set_hold_targeted_update(hass) -> None:
+    """v0.4.9: async_set_hold for the network override switch publishes
+    a targeted single-device state update so the switch UI sees the
+    change immediately."""
+    dev = make_dev(1)
+    dev.async_set_hold = AsyncMock(return_value=True)
+    dev.get_state = MagicMock(return_value={"hold_status": "ON", "available": True})
+    coord = make_coord(hass, devices={1: dev})
+    coord._store = MagicMock()
+    coord._store.async_save = AsyncMock()
+    coord.async_update_listeners = MagicMock()
+    ok = await coord.async_set_hold("1", True)
+    assert ok is True
+    assert coord.data["1"]["hold_status"] == "ON"
+    coord.async_update_listeners.assert_called_once()
+
+
+async def test_set_hold_missing_method_returns_false(hass) -> None:
+    """If the device doesn't support HOLD (no async_set_hold attr),
+    the coordinator returns False without trying to call it."""
+    dev = make_dev(1)
+    del dev.async_set_hold  # remove the auto-generated mock
+    coord = make_coord(hass, devices={1: dev})
+    assert await coord.async_set_hold("1", True) is False
+
+
 async def test_set_heat_setpoint_failure_skips_publish(hass) -> None:
     """Failed sets must not touch coordinator.data or notify listeners —
     otherwise the UI would briefly show a value the thermostat doesn't

@@ -211,15 +211,17 @@ class AprilaireFanOverrideSwitch(AprilaireSwitch):
 
     async def _async_turn_on_impl(self, **kwargs: Any) -> None:
         """Turn on fan override (set fan mode to ON)."""
-        await self._device.async_set_fan_mode("ON")
-        # Coordinator will be updated when the COS message is received
-        # or during the next polling cycle
-    
+        # v0.4.9: route through the coordinator so the targeted single-
+        # device state publish runs and HA's switch entity sees the new
+        # state immediately. Calling self._device.async_set_fan_mode
+        # directly updated device._state but NOT coordinator.data, so
+        # is_on (which reads from coordinator.data) stayed False until
+        # the next ~5min poll cycle — the switch toggle looked dead.
+        await self.coordinator.async_set_fan_mode(self._device_id, "ON")
+
     async def _async_turn_off_impl(self, **kwargs: Any) -> None:
         """Turn off fan override (set fan mode to AUTO)."""
-        await self._device.async_set_fan_mode("AUTO")
-        # Coordinator will be updated when the COS message is received
-        # or during the next polling cycle
+        await self.coordinator.async_set_fan_mode(self._device_id, "AUTO")
 
 class AprilaireNetworkOverrideSwitch(AprilaireSwitch):
     """Switch to control network override (HOLD) functionality."""
@@ -243,15 +245,13 @@ class AprilaireNetworkOverrideSwitch(AprilaireSwitch):
 
     async def _async_turn_on_impl(self, **kwargs: Any) -> None:
         """Turn on network override (set HOLD to ON)."""
-        if hasattr(self._device, "async_set_hold"):
-            await self._device.async_set_hold(True)
-        # Coordinator will be updated when the COS message is received or during polling
-    
+        # v0.4.9: route through coordinator for the targeted publish —
+        # same fix as AprilaireFanOverrideSwitch above.
+        await self.coordinator.async_set_hold(self._device_id, True)
+
     async def _async_turn_off_impl(self, **kwargs: Any) -> None:
         """Turn off network override (set HOLD to OFF)."""
-        if hasattr(self._device, "async_set_hold"):
-            await self._device.async_set_hold(False)
-        # Coordinator will be updated when the COS message is received or during polling
+        await self.coordinator.async_set_hold(self._device_id, False)
 
 # v0.4.6: AprilaireBacklightSwitch removed — the 8870 firmware only
 # supports BLTON (one-shot 10s pulse), not a constant on/off state.

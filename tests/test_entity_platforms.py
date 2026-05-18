@@ -559,19 +559,23 @@ def test_switch_fan_override_is_off_default() -> None:
 
 
 async def test_switch_fan_override_turn_on(hass) -> None:
+    """v0.4.9: switch routes through coordinator so the targeted
+    single-device state publish runs after the bus write."""
     dev = make_device(1)
     coord = make_coordinator(data={"1": {"available": True}})
+    coord.async_set_fan_mode = AsyncMock(return_value=True)
     s = sw.AprilaireFanOverrideSwitch(coord, dev)
     await s.async_turn_on()
-    dev.async_set_fan_mode.assert_called_with("ON")
+    coord.async_set_fan_mode.assert_called_with("1", "ON")
 
 
 async def test_switch_fan_override_turn_off(hass) -> None:
     dev = make_device(1)
     coord = make_coordinator(data={"1": {"available": True}})
+    coord.async_set_fan_mode = AsyncMock(return_value=True)
     s = sw.AprilaireFanOverrideSwitch(coord, dev)
     await s.async_turn_off()
-    dev.async_set_fan_mode.assert_called_with("AUTO")
+    coord.async_set_fan_mode.assert_called_with("1", "AUTO")
 
 
 async def test_switch_turn_on_blocked_when_cache_unavailable() -> None:
@@ -629,20 +633,26 @@ def test_switch_network_override_is_on() -> None:
 
 
 async def test_switch_network_override_turn_on_and_off() -> None:
+    """v0.4.9: switch routes through coordinator.async_set_hold so the
+    targeted single-device state publish runs."""
     dev = make_device(1)
     coord = make_coordinator(data={"1": {"available": True}})
+    coord.async_set_hold = AsyncMock(return_value=True)
     s = sw.AprilaireNetworkOverrideSwitch(coord, dev)
     await s.async_turn_on()
-    dev.async_set_hold.assert_called_with(True)
+    coord.async_set_hold.assert_called_with("1", True)
     await s.async_turn_off()
-    dev.async_set_hold.assert_called_with(False)
+    coord.async_set_hold.assert_called_with("1", False)
 
 
 async def test_switch_network_override_device_without_set_hold() -> None:
+    """When the underlying device doesn't support HOLD, the coordinator's
+    set_hold returns False and the switch is a no-op (no exception).
+    """
     dev = SimpleNamespace(address=1, name="x", unique_id="x")
     coord = make_coordinator(data={"1": {"available": True}})
+    coord.async_set_hold = AsyncMock(return_value=False)
     s = sw.AprilaireNetworkOverrideSwitch(coord, dev)
-    # No async_set_hold attr — should be a no-op (no exception).
     await s.async_turn_on()
     await s.async_turn_off()
 

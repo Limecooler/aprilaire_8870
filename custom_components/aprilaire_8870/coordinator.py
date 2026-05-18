@@ -834,6 +834,28 @@ class AprilaireDataUpdateCoordinator(DataUpdateCoordinator):
             await self._async_save_state()
         return bool(ok)
 
+    async def async_set_hold(self, device_id: str, on: bool) -> bool:
+        """Set the network-override HOLD state for a device. Returns success.
+
+        v0.4.9: wraps device.async_set_hold so the network-override
+        switch can publish a targeted single-device state update on
+        success (rather than waiting up to 5 min for the next bulk poll
+        for HA's switch UI to reflect the change).
+        """
+        if self.devices is None:
+            _LOGGER.error("Device dictionary not initialized")
+            return False
+
+        device = self.devices.get(int(device_id))
+        if not device or not hasattr(device, "async_set_hold"):
+            _LOGGER.error("Device not found or missing async_set_hold: %s", device_id)
+            return False
+        ok = await device.async_set_hold(bool(on))
+        if ok:
+            self._publish_single_device_state(device)
+            await self._async_save_state()
+        return bool(ok)
+
     @callback
     def _handle_bus_message(self, config: Any, line: str) -> None:
         """Decode any inbound thermostat message into device state.
