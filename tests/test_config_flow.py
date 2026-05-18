@@ -447,3 +447,19 @@ def test_options_flow_get_static(hass) -> None:
     assert isinstance(
         cf.AprilaireConfigFlow.async_get_options_flow(entry), cf.AprilaireOptionsFlowHandler
     )
+
+
+def test_options_flow_constructor_no_args() -> None:
+    """v0.4.10 regression: modern HA's OptionsFlow makes ``config_entry``
+    a read-only property and rejects custom ``__init__`` constructors
+    that try to assign to it. Caught in production with an
+    ``AttributeError: property 'config_entry' of
+    'AprilaireOptionsFlowHandler' object has no setter`` whenever the
+    user clicked the integration's options gear icon.
+
+    Verify the handler instantiates with no args (HA injects
+    config_entry via the base class).
+    """
+    # Constructor should not raise.
+    handler = cf.AprilaireOptionsFlowHandler()
+    assert handler is not None

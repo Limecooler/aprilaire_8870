@@ -104,8 +104,14 @@ class AprilaireConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     def async_get_options_flow(
         config_entry: ConfigEntry,
     ) -> AprilaireOptionsFlowHandler:
-        """Get the options flow for this handler."""
-        return AprilaireOptionsFlowHandler(config_entry)
+        """Get the options flow for this handler.
+
+        v0.4.10: HA injects ``config_entry`` via the base ``OptionsFlow``
+        class itself; we no longer pass it to ``__init__`` (modern HA
+        rejects the assignment because ``config_entry`` is now a
+        read-only property on ``OptionsFlow``).
+        """
+        return AprilaireOptionsFlowHandler()
 
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
@@ -372,24 +378,31 @@ class AprilaireConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
 
 class AprilaireOptionsFlowHandler(config_entries.OptionsFlow):
-    """Handle Aprilaire options."""
+    """Handle Aprilaire options.
 
-    def __init__(self, config_entry: ConfigEntry) -> None:
-        """Initialize options flow."""
-        self.config_entry = config_entry
-        self.options = dict(config_entry.options)
-        self.data = dict(config_entry.data)
+    v0.4.10: dropped the custom ``__init__`` — modern HA's
+    ``OptionsFlow`` provides ``self.config_entry`` as a read-only
+    property and assigning to it raises ``AttributeError``. We read
+    the entry's options/data directly from the property instead of
+    caching local copies (the previous copy-in-init never wrote back
+    anyway; the only mutation is the in-progress form's
+    ``self.options`` dict, which we still maintain).
+    """
 
     async def async_step_init(
         self, user_input: dict[str, Any] | None = None
     ) -> FlowResult:
         """Manage options."""
+        # Lazily initialize the in-progress options dict on first entry.
+        if not hasattr(self, "options") or self.options is None:
+            self.options = dict(self.config_entry.options)
+
         if user_input is not None:
             self.options.update(user_input)
             return self.async_create_entry(title="", data=self.options)
-        
-        # Combine data and options for defaults
-        combined = {**self.data, **self.options}
+
+        # Combine entry.data and accumulated options for defaults.
+        combined = {**dict(self.config_entry.data), **self.options}
         
         return self.async_show_form(
             step_id="init",
